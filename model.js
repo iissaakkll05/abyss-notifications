@@ -35,7 +35,9 @@ function parseFile(text,path){
   if(task.date&&!validDate(task.date))task.error='Некорректная дата';if(task.time&&!validTime(task.time))task.error='Некорректное время';
   if(/[⏱]/u.test(raw)&&!dur)task.error='Не указана длительность';
   const repeat=raw.match(/🔁\s*(.*?)(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/u)?.[1]?.trim()||raw.match(/\[repeat::\s*([^\]]+)\]/)?.[1]?.trim()||'';
-  try{task.rule=recurrence(repeat)[0]?.replace(/^RRULE:/,'')||'';}catch(e){task.error=e.message;}
+  task.repeatText=repeat;task.whenDone=/\bwhen done$/i.test(repeat);
+  // A completion-relative repeat is scheduled by Obsidian, never guessed on the server.
+  try{task.rule=task.whenDone?'':recurrence(repeat)[0]?.replace(/^RRULE:/,'')||'';}catch(e){if(!task.done)task.error=e.message;task.rule='';}
   if(task.kind==='calendar'&&task.startDate&&task.dueDate){
    if(!validDate(task.startDate)||task.startDate>task.dueDate)task.error='Дата начала должна быть корректной и не позже срока';
    else if(task.startDate<task.dueDate){

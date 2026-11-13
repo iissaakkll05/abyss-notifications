@@ -29,6 +29,7 @@ jobs:
           node build.cjs
           node tests.cjs
           node plugin.test.cjs
+          node identity.test.cjs
           node mobile-network.test.cjs
           node verify-release.cjs
       - name: Check committed bundle matches source

@@ -6,6 +6,7 @@ const {ViewPlugin,Decoration,EditorView}=require('@codemirror/view');
 const {parseFile}=require('./model');
 const {Transport}=require('./transport');
 const {publish}=require('./engine');
+const {recurrenceRepairs}=require('./identity');
 const {createDavRequest}=require('./mobile-network');
 const {installAbyssMarkerHider}=require('./marker-ui');
 const uid=()=>{const b=new Uint8Array(16);crypto.getRandomValues(b);return [...b].map(x=>x.toString(16).padStart(2,'0')).join('');};
@@ -39,7 +40,7 @@ module.exports=class Notifications extends Plugin{
  log(message,meta=''){this.logRows.push(new Date().toISOString()+' '+message+(meta?' · '+meta:''));if(this.logRows.length>200)this.logRows.shift();this.logDirty=true;}
  async flushLog(){if(!this.logDirty)return;this.logDirty=false;try{await this.app.vault.adapter.write(this.manifest.dir+'/journal-'+(Platform.isIosApp?'ios':Platform.isAndroidApp?'android':'desktop')+'.log',this.logRows.join('\n'));}catch{/* Journal failure cannot block export. */}}
  showLog(){new TextModal(this.app,'Журнал Abyss Notifications',this.logRows.join('\n')||'Обмен ещё не запускался.').open();}
- showStatus(){new TextModal(this.app,'Состояние Abyss Notifications',[this.phase||'Ожидание',this.lastSuccess?'Последний обмен: '+this.lastSuccess:'',this.result?'Отправлено: '+this.result.writes+'; удалено: '+this.result.deletes+'; задач: '+this.result.selected:'',...this.errors.map(e=>e.path+':'+(e.line+1)+' — '+e.message)].filter(Boolean).join('\n')).open();}
+ showStatus(){new TextModal(this.app,'Состояние Abyss Notifications',[this.phase||'Ожидание',this.lastSuccess?'Последний успешный обмен: '+this.lastSuccess:'',this.result?'Отправлено: '+this.result.writes+'; удалено: '+this.result.deletes+'; задач в обмене: '+this.result.selected:'',this.errors.length?'Пропущенные задачи сохранены на сервере без изменений; остальные синхронизированы.':'',...this.errors.map(e=>(e.title?'«'+e.title+'»\n':'')+e.path+':'+(e.line+1)+' — '+e.message)].filter(Boolean).join('\n')).open();}
  legacyActive(){return !!this.app.plugins?.enabledPlugins?.has('task-calendar-bridge');}
  async snapshot(){
   const tasks=[],seen=new Set();let reads=0,parses=0;
@@ -51,8 +52,9 @@ module.exports=class Notifications extends Plugin{
   this.log('Индекс заметок','чтений '+reads+', разборов '+parses);return tasks;
  }
  async assignIds(tasks,guard){
-  const byPath=new Map();for(const t of tasks)if(t.selected&&!t.error&&!t.id&&!t.done){if(!byPath.has(t.path))byPath.set(t.path,[]);byPath.get(t.path).push(t);}
-  for(const [path,rows] of byPath){await guard();const file=this.app.vault.getAbstractFileByPath(path),entry=this.cache.get(path);if(!file)throw Error('Заметка ещё меняется.');const lines=entry.text.split(/\r?\n/);for(const t of rows){t.id=uid();lines[t.line]+=' <!-- dav:'+t.id+' -->';}const desired=lines.join(entry.text.includes('\r\n')?'\r\n':'\n');this.writing.add(path);try{await this.app.vault.process(file,current=>{if(current!==entry.text)throw Error('Заметка ещё меняется.');return desired;});const actual=await this.app.vault.read(file);if(actual!==desired){this.revision++;throw Error('Заметка ещё меняется.');}this.cache.set(path,{signature:file.stat.mtime+':'+file.stat.size,text:desired,tasks:parseFile(desired,path)});}finally{this.writing.delete(path);}}
+  const repairs=recurrenceRepairs(tasks,this.settings.state),changes=[...repairs,...tasks.filter(t=>t.selected&&!t.error&&!t.id&&!t.done).map(task=>({task}))],byPath=new Map();
+  for(const change of changes){if(!byPath.has(change.task.path))byPath.set(change.task.path,[]);byPath.get(change.task.path).push(change);}
+  for(const [path,rows] of byPath){await guard();const file=this.app.vault.getAbstractFileByPath(path),entry=this.cache.get(path);if(!file)throw Error('Заметка ещё меняется.');const lines=entry.text.split(/\r?\n/);for(const {task:t,oldId}of rows){const next=uid();lines[t.line]=oldId?lines[t.line].replace(new RegExp('<!-- (?:dav|gcal):'+oldId+' -->'),'<!-- dav:'+next+' -->'):lines[t.line]+' <!-- dav:'+next+' -->';}const desired=lines.join(entry.text.includes('\r\n')?'\r\n':'\n');this.writing.add(path);try{await this.app.vault.process(file,current=>{if(current!==entry.text)throw Error('Заметка ещё меняется.');return desired;});const actual=await this.app.vault.read(file);if(actual!==desired){this.revision++;throw Error('Заметка ещё меняется.');}this.cache.set(path,{signature:file.stat.mtime+':'+file.stat.size,text:desired,tasks:parseFile(desired,path)});if(rows.some(r=>r.oldId))this.log('Восстановлены метки экземпляров повторяющейся задачи','количество '+rows.filter(r=>r.oldId).length);}finally{this.writing.delete(path);}}
   return [...this.cache.values()].flatMap(e=>e.tasks);
  }
  async sync(manual=false){
@@ -61,16 +63,16 @@ module.exports=class Notifications extends Plugin{
   if(this.legacyActive()){this.phase='Сначала отключи старый Abyss Fruux Bridge: оба плагина одновременно не работают.';if(manual)new Notice(this.phase,8000);return;}
   if(!this.settings.user||!this.settings.password){if(manual)new Notice('Укажи данные fruux в настройках Abyss Notifications.');return;}
   if(Date.now()-this.lastEdit<this.settings.delaySeconds*1000){this.phase='Ожидаю окончания ввода';if(manual)new Notice('Закончи ввод и повтори команду через несколько секунд.');else this.schedule();return;}
-  this.running=true;clearTimeout(this.timer);this.errors=[];const revision=this.revision,start=Date.now();let requests=0;
+  this.running=true;clearTimeout(this.timer);this.errors=[];this.result=null;const revision=this.revision,start=Date.now();let requests=0;
   const guard=async()=>{if(this.stopped||document.hidden||this.revision!==revision||!manual&&!this.allowed()){const e=Error('Обмен отложен: заметка меняется или приложение скрыто.');e.deferred=true;throw e;}};
   const settings={...this.settings};this.phase='Отправляю задачи';this.log('Начало обмена',manual?'вручную':'автоматически');
   try{
    let tasks=await this.snapshot();await guard();tasks=await this.assignIds(tasks,guard);await guard();
-   this.errors=tasks.filter(t=>t.selected&&t.error).map(t=>({path:t.path,line:t.line,message:t.error}));
+   this.errors=tasks.filter(t=>t.selected&&t.error).map(t=>({path:t.path,line:t.line,title:t.title,message:t.error}));
    const account=JSON.stringify([settings.server,settings.user]);if(this.settings.account!==account){this.settings.state={};this.settings.account=account;}
    const transport=new Transport(async p=>{await guard();requests++;this.log('Запрос',p.method+' → '+new URL(p.url).hostname);try{const r=await this.native(p);this.log('Ответ',p.method+' HTTP '+r.status);return r;}catch{throw Error('Нет ответа CalDAV. Проверь доступ к fruux из Obsidian; повторим при следующем обмене.');}},{davServer:settings.server,davUser:settings.user,davPassword:settings.password,davHomeHint:this.settings.homeAccount===account?this.settings.home:''});
    this.result=await publish({tasks,transport,settings,vault:this.app.vault.getName(),state:this.settings.state,guard,save:()=>this.save(),log:(op,kind)=>this.log(op==='put'?'Запись отправлена':'Запись удалена',kind)});
-   this.settings.home=transport.homeUrl;this.settings.homeAccount=account;this.errors=[...new Map([...this.errors,...this.result.issues].map(x=>[x.path+':'+x.line+':'+x.message,x])).values()];this.phase='Готово: изменений '+(this.result.writes+this.result.deletes)+(this.errors.length?'; пропущено '+this.errors.length:'');this.lastSuccess=new Date().toLocaleString();this.errorNotified=false;await this.save();if(manual)new Notice(this.phase,6000);
+   this.settings.home=transport.homeUrl;this.settings.homeAccount=account;this.errors=[...new Map([...this.errors,...this.result.issues].map(x=>[x.path+':'+x.line+':'+x.message,x])).values()];this.phase=(this.errors.length?'Частично: ':'Готово: ')+'изменений '+(this.result.writes+this.result.deletes)+(this.errors.length?'; пропущено '+this.errors.length:'');this.lastSuccess=new Date().toLocaleString();this.errorNotified=false;await this.save();if(manual)new Notice(this.phase,6000);
   }catch(e){if(e.deferred){this.phase=e.message;this.log('Тихий повтор');this.schedule();}else{this.phase=e.message;this.log('Ошибка',/^CalDAV: HTTP \d+ при [A-Z]+\.$/.test(e.message)?e.message:'Обмен не завершён; проверь подключение и состояние');if(manual||!this.errorNotified)new Notice('Abyss Notifications: '+e.message,7000);this.errorNotified=true;}}
   finally{this.running=false;this.log('Завершение','запросов '+requests+', мс '+(Date.now()-start));await this.flushLog();if(this.externalPending){this.externalPending=false;await this.onExternalSettingsChange();}if(this.manualQueued){this.manualQueued=false;await this.sync(true);}else if(this.revision!==revision)this.schedule();}
  }
@@ -78,7 +80,7 @@ module.exports=class Notifications extends Plugin{
 class Settings extends PluginSettingTab{
  constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
  display(){
-  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.5'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
+  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.6'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
   e.createEl('p',{text:p.legacyActive()?'Для запуска отключи старый Abyss Fruux Bridge.':p.phase||(p.allowed()?'Автоматический обмен разрешён на этом устройстве.':'На этом устройстве доступен ручной запуск.')});
   new Setting(e).setName('Обмен').addButton(b=>b.setButtonText('Синхронизировать').onClick(async()=>{await p.sync(true);this.display();}));
   new Setting(e).setName('Состояние и пропущенные задачи').addButton(b=>b.setButtonText('Открыть').onClick(()=>p.showStatus())).addButton(b=>b.setButtonText('Журнал').onClick(()=>p.showLog()));
@@ -134,7 +136,9 @@ function parseFile(text,path){
   if(task.date&&!validDate(task.date))task.error='Некорректная дата';if(task.time&&!validTime(task.time))task.error='Некорректное время';
   if(/[⏱]/u.test(raw)&&!dur)task.error='Не указана длительность';
   const repeat=raw.match(/🔁\s*(.*?)(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/u)?.[1]?.trim()||raw.match(/\[repeat::\s*([^\]]+)\]/)?.[1]?.trim()||'';
-  try{task.rule=recurrence(repeat)[0]?.replace(/^RRULE:/,'')||'';}catch(e){task.error=e.message;}
+  task.repeatText=repeat;task.whenDone=/\bwhen done$/i.test(repeat);
+  // A completion-relative repeat is scheduled by Obsidian, never guessed on the server.
+  try{task.rule=task.whenDone?'':recurrence(repeat)[0]?.replace(/^RRULE:/,'')||'';}catch(e){if(!task.done)task.error=e.message;task.rule='';}
   if(task.kind==='calendar'&&task.startDate&&task.dueDate){
    if(!validDate(task.startDate)||task.startDate>task.dueDate)task.error='Дата начала должна быть корректной и не позже срока';
    else if(task.startDate<task.dueDate){
@@ -413,12 +417,12 @@ async function publish({tasks,transport,settings,vault,state,save,guard=async()=
  const collections=await transport.ensure(settings.namespace,vault),indexes={};for(const kind of ['reminders','calendar'])indexes[kind]=await transport.index(collections[kind]);
  const desired=new Map(),protectedIds=new Set(),issues=[],counts=new Map();let writes=0,deletes=0;
  for(const t of tasks)if(t.id)counts.set(t.id,(counts.get(t.id)||0)+1);
- for(const task of tasks){if(!task.id)continue;if(counts.get(task.id)>1){protectedIds.add(task.id);issues.push({path:task.path,line:task.line,message:'Повторяется идентификатор задачи; её записи не изменены.'});continue;}if(task.error){protectedIds.add(task.id);issues.push({path:task.path,line:task.line,message:task.error});continue;}if(task.selected)desired.set(task.id,task);}
+ for(const task of tasks){if(!task.id)continue;if(counts.get(task.id)>1){protectedIds.add(task.id);issues.push({path:task.path,line:task.line,title:task.title,message:'Скопирована служебная метка. Удали метку у копии задачи; её записи пока сохранены без изменений.'});continue;}if(task.error){protectedIds.add(task.id);issues.push({path:task.path,line:task.line,title:task.title,message:task.error});continue;}if(task.selected)desired.set(task.id,task);}
  const href=(kind,id)=>new URL('an-'+settings.namespace+'-'+id+'.ics',collections[kind]).href;
  const ownId=url=>{const u=new URL(url),m=decodeURIComponent(u.pathname.split('/').pop()).match(new RegExp('^an-'+settings.namespace+'-([a-f0-9]{32})\\.ics$'));return m?.[1];};
  for(const [id,task] of desired)if(task.done&&!['reminders','calendar'].some(k=>indexes[k].has(href(k,id))||state[k+':'+id]))desired.delete(id);
  // Validate every desired payload before deleting or moving any record.
- const payloads=new Map();for(const [id,task] of desired)try{payloads.set(id,serialize(task,{namespace:settings.namespace,zone:settings.timezone,lead:settings.leadMinutes,vault}));}catch(e){protectedIds.add(id);desired.delete(id);issues.push({path:task.path,line:task.line,message:e.message});}
+ const payloads=new Map();for(const [id,task] of desired)try{payloads.set(id,serialize(task,{namespace:settings.namespace,zone:settings.timezone,lead:settings.leadMinutes,vault}));}catch(e){protectedIds.add(id);desired.delete(id);issues.push({path:task.path,line:task.line,title:task.title,message:e.message});}
  // Delete the previous representation first: a failed move leaves a retryable gap, never a second reminder.
  for(const kind of ['reminders','calendar'])for(const [url,etag] of indexes[kind]){
   const id=ownId(url);if(!id||protectedIds.has(id))continue;const task=desired.get(id);if(task?.kind===kind)continue;
@@ -434,6 +438,29 @@ async function publish({tasks,transport,settings,vault,state,save,guard=async()=
  return {writes,deletes,issues,selected:desired.size,collections};
 }
 module.exports={publish};
+
+},
+"identity":function(module,exports,require){
+"use strict";
+// A Tasks/Abyss recurrence completion can copy the entire Markdown line, including our ID.
+// Only repair an identifiable generation chain; unrelated/ambiguous copies stay protected.
+function recurrenceRepairs(tasks,state={}){
+ const groups=new Map(),result=[];
+ for(const t of tasks)if(t.id){if(!groups.has(t.id))groups.set(t.id,[]);groups.get(t.id).push(t);}
+ for(const [id,rows]of groups){
+  if(rows.length<2||rows.some(t=>!t.eligible||t.error||!t.date)||rows.filter(t=>!t.done).length>1||!rows.some(t=>t.done))continue;
+  const family=t=>t.repeatText?.toLowerCase().replace(/\s+/g,' ').trim()||(/(?:^|\s)#task\/(?:regular|recurring)(?=\s|$)/u.test(t.rawLine)?'@regular':'');
+  const families=new Set(rows.map(family).filter(Boolean));if(families.size!==1||rows.some(t=>!t.done&&!family(t)||t.title!==rows[0].title))continue;
+  if(new Set(rows.map(t=>t.date)).size!==rows.length||rows.some(t=>(t.rawLine.match(/<!-- (?:dav|gcal):[a-f0-9]{32} -->/g)||[]).length!==1))continue;
+  const records=['reminders','calendar'].map(k=>state[k+':'+id]).filter(Boolean),dates=new Set();
+  for(const record of records){try{const hash=JSON.parse(record.hash);if(Array.isArray(hash)&&hash[1]===rows[0].title&&/^\d{4}-\d{2}-\d{2}$/.test(hash[3]))dates.add(hash[3]);}catch{/* Earliest generation remains the fallback when no usable checkpoint exists. */}}
+  if(dates.size>1)continue;
+  const savedDate=[...dates][0],keeper=rows.find(t=>t.date===savedDate)||rows.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.path.localeCompare(b.path)||a.line-b.line)[0];
+  for(const t of rows)if(t!==keeper)result.push({task:t,oldId:id});
+ }
+ return result;
+}
+module.exports={recurrenceRepairs};
 
 },
 "mobile-network":function(module,exports,require){
