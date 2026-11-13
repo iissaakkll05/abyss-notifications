@@ -1,8 +1,18 @@
 "use strict";
 const {CaldavReader}=require('./discovery');
+const {equivalent}=require('./projection');
 const DAV='DAV:';
 const xml=s=>s.replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&apos;'}[c]));
 class Transport extends CaldavReader{
+ etag(headers){return Object.entries(headers||{}).find(([key])=>key.toLowerCase()==='etag')?.[1]||'';}
+ async matches(url,etag,body){
+  if(!etag)return false;
+  const r=await this.request({url:this.safeUrl(url),method:'GET',headers:{Authorization:'Basic '+btoa(String.fromCharCode(...new TextEncoder().encode(this.user+':'+this.password))),'If-Match':etag},throw:false});
+  if(r.status===404||r.status===412)return false;if(r.status!==200)throw Error('CalDAV: HTTP '+r.status+' при GET.');
+  const version=this.etag(r.headers);if(version&&version!==etag)return false;
+  return equivalent(r.text||'',body,this.zone);
+ }
+ constructor(request,settings){super(request,settings);this.zone=settings.timezone||'Europe/Moscow';}
  async mutation(method,url,body,etag){
   if(!['PUT','DELETE','MKCALENDAR','PROPPATCH'].includes(method))throw Error('Неизвестная операция CalDAV.');
   if(method==='DELETE'&&!etag)throw Error('Удаление без версии записи запрещено.');
@@ -13,7 +23,15 @@ class Transport extends CaldavReader{
   const accepted=method==='PROPPATCH'?[207]:method==='MKCALENDAR'?[201]:method==='DELETE'?[200,204]:[200,201,204];
   if(!accepted.includes(r.status)){const e=Error('CalDAV: HTTP '+r.status+' при '+method+'.');e.status=r.status;throw e;}
   if(method==='PROPPATCH'&&(!r.text||!require('./discovery').parseResponses(r.text).some(p=>p.get(DAV,'displayname'))))throw Error('Сервер не подтвердил название коллекции.');
-  return r.headers?.etag||r.headers?.ETag||'';
+  let version=this.etag(r.headers);
+  if(method==='PUT'&&!version){
+   // Some iOS/proxy responses omit ETag. Bind a version only after a conditional read
+   // confirms that it is still our uploaded content, never a concurrent phone edit.
+   const rows=await this.read(url,'PROPFIND','<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>');
+   const candidate=rows[0]?.get(DAV,'getetag')?.textContent?.trim();
+   if(candidate&&await this.matches(url,candidate,body))version=candidate;
+  }
+  return version;
  }
  async ensure(namespace,vault){
   const lists=await this.discover('ALL'),out={};

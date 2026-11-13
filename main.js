@@ -40,7 +40,7 @@ module.exports=class Notifications extends Plugin{
  log(message,meta=''){this.logRows.push(new Date().toISOString()+' '+message+(meta?' · '+meta:''));if(this.logRows.length>200)this.logRows.shift();this.logDirty=true;}
  async flushLog(){if(!this.logDirty)return;this.logDirty=false;try{await this.app.vault.adapter.write(this.manifest.dir+'/journal-'+(Platform.isIosApp?'ios':Platform.isAndroidApp?'android':'desktop')+'.log',this.logRows.join('\n'));}catch{/* Journal failure cannot block export. */}}
  showLog(){new TextModal(this.app,'Журнал Abyss Notifications',this.logRows.join('\n')||'Обмен ещё не запускался.').open();}
- showStatus(){new TextModal(this.app,'Состояние Abyss Notifications',[this.phase||'Ожидание',this.lastSuccess?'Последний успешный обмен: '+this.lastSuccess:'',this.result?'Отправлено: '+this.result.writes+'; удалено: '+this.result.deletes+'; задач в обмене: '+this.result.selected:'',this.errors.length?'Пропущенные задачи сохранены на сервере без изменений; остальные синхронизированы.':'',...this.errors.map(e=>(e.title?'«'+e.title+'»\n':'')+e.path+':'+(e.line+1)+' — '+e.message)].filter(Boolean).join('\n')).open();}
+ showStatus(){new TextModal(this.app,'Состояние Abyss Notifications',[this.phase||'Ожидание',this.lastSuccess?'Последний успешный обмен: '+this.lastSuccess:'',this.result?'Операции на сервере: записано '+this.result.writes+'; удалено '+this.result.deletes+'; задач в обмене: '+this.result.selected:'',this.errors.length?'Пропущенные задачи сохранены на сервере без изменений; остальные синхронизированы.':'',...this.errors.map(e=>(e.title?'«'+e.title+'»\n':'')+e.path+':'+(e.line+1)+' — '+e.message)].filter(Boolean).join('\n')).open();}
  legacyActive(){return !!this.app.plugins?.enabledPlugins?.has('task-calendar-bridge');}
  async snapshot(){
   const tasks=[],seen=new Set();let reads=0,parses=0;
@@ -70,9 +70,9 @@ module.exports=class Notifications extends Plugin{
    let tasks=await this.snapshot();await guard();tasks=await this.assignIds(tasks,guard);await guard();
    this.errors=tasks.filter(t=>t.selected&&t.error).map(t=>({path:t.path,line:t.line,title:t.title,message:t.error}));
    const account=JSON.stringify([settings.server,settings.user]);if(this.settings.account!==account){this.settings.state={};this.settings.account=account;}
-   const transport=new Transport(async p=>{await guard();requests++;this.log('Запрос',p.method+' → '+new URL(p.url).hostname);try{const r=await this.native(p);this.log('Ответ',p.method+' HTTP '+r.status);return r;}catch{throw Error('Нет ответа CalDAV. Проверь доступ к fruux из Obsidian; повторим при следующем обмене.');}},{davServer:settings.server,davUser:settings.user,davPassword:settings.password,davHomeHint:this.settings.homeAccount===account?this.settings.home:''});
-   this.result=await publish({tasks,transport,settings,vault:this.app.vault.getName(),state:this.settings.state,guard,save:()=>this.save(),log:(op,kind)=>this.log(op==='put'?'Запись отправлена':'Запись удалена',kind)});
-   this.settings.home=transport.homeUrl;this.settings.homeAccount=account;this.errors=[...new Map([...this.errors,...this.result.issues].map(x=>[x.path+':'+x.line+':'+x.message,x])).values()];this.phase=(this.errors.length?'Частично: ':'Готово: ')+'изменений '+(this.result.writes+this.result.deletes)+(this.errors.length?'; пропущено '+this.errors.length:'');this.lastSuccess=new Date().toLocaleString();this.errorNotified=false;await this.save();if(manual)new Notice(this.phase,6000);
+   const transport=new Transport(async p=>{await guard();requests++;this.log('Запрос',p.method+' → '+new URL(p.url).hostname);try{const r=await this.native(p);this.log('Ответ',p.method+' HTTP '+r.status);return r;}catch{throw Error('Нет ответа CalDAV. Проверь доступ к fruux из Obsidian; повторим при следующем обмене.');}},{davServer:settings.server,davUser:settings.user,davPassword:settings.password,timezone:settings.timezone,davHomeHint:this.settings.homeAccount===account?this.settings.home:''});
+   this.result=await publish({tasks,transport,settings,vault:this.app.vault.getName(),state:this.settings.state,guard,save:()=>this.save(),log:(op,kind,id,reason)=>this.log(op==='put'?'Запись отправлена':op==='confirmed'?'Версия подтверждена без повторной отправки':'Запись удалена',[kind,reason].filter(Boolean).join(' · '))});
+   this.settings.home=transport.homeUrl;this.settings.homeAccount=account;this.errors=[...new Map([...this.errors,...this.result.issues].map(x=>[x.path+':'+x.line+':'+x.message,x])).values()];this.phase=(this.errors.length?'Частично: ':'Готово: ')+'изменено задач '+this.result.changed+(this.errors.length?'; пропущено '+this.errors.length:'');this.lastSuccess=new Date().toLocaleString();this.errorNotified=false;await this.save();if(manual)new Notice(this.phase,6000);
   }catch(e){if(e.deferred){this.phase=e.message;this.log('Тихий повтор');this.schedule();}else{this.phase=e.message;this.log('Ошибка',/^CalDAV: HTTP \d+ при [A-Z]+\.$/.test(e.message)?e.message:'Обмен не завершён; проверь подключение и состояние');if(manual||!this.errorNotified)new Notice('Abyss Notifications: '+e.message,7000);this.errorNotified=true;}}
   finally{this.running=false;this.log('Завершение','запросов '+requests+', мс '+(Date.now()-start));await this.flushLog();if(this.externalPending){this.externalPending=false;await this.onExternalSettingsChange();}if(this.manualQueued){this.manualQueued=false;await this.sync(true);}else if(this.revision!==revision)this.schedule();}
  }
@@ -80,7 +80,7 @@ module.exports=class Notifications extends Plugin{
 class Settings extends PluginSettingTab{
  constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
  display(){
-  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.6'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
+  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.7'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
   e.createEl('p',{text:p.legacyActive()?'Для запуска отключи старый Abyss Fruux Bridge.':p.phase||(p.allowed()?'Автоматический обмен разрешён на этом устройстве.':'На этом устройстве доступен ручной запуск.')});
   new Setting(e).setName('Обмен').addButton(b=>b.setButtonText('Синхронизировать').onClick(async()=>{await p.sync(true);this.display();}));
   new Setting(e).setName('Состояние и пропущенные задачи').addButton(b=>b.setButtonText('Открыть').onClick(()=>p.showStatus())).addButton(b=>b.setButtonText('Журнал').onClick(()=>p.showLog()));
@@ -251,9 +251,19 @@ module.exports={localEpoch,localParts,timezoneComponent};
 "transport":function(module,exports,require){
 "use strict";
 const {CaldavReader}=require('./discovery');
+const {equivalent}=require('./projection');
 const DAV='DAV:';
 const xml=s=>s.replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&apos;'}[c]));
 class Transport extends CaldavReader{
+ etag(headers){return Object.entries(headers||{}).find(([key])=>key.toLowerCase()==='etag')?.[1]||'';}
+ async matches(url,etag,body){
+  if(!etag)return false;
+  const r=await this.request({url:this.safeUrl(url),method:'GET',headers:{Authorization:'Basic '+btoa(String.fromCharCode(...new TextEncoder().encode(this.user+':'+this.password))),'If-Match':etag},throw:false});
+  if(r.status===404||r.status===412)return false;if(r.status!==200)throw Error('CalDAV: HTTP '+r.status+' при GET.');
+  const version=this.etag(r.headers);if(version&&version!==etag)return false;
+  return equivalent(r.text||'',body,this.zone);
+ }
+ constructor(request,settings){super(request,settings);this.zone=settings.timezone||'Europe/Moscow';}
  async mutation(method,url,body,etag){
   if(!['PUT','DELETE','MKCALENDAR','PROPPATCH'].includes(method))throw Error('Неизвестная операция CalDAV.');
   if(method==='DELETE'&&!etag)throw Error('Удаление без версии записи запрещено.');
@@ -264,7 +274,15 @@ class Transport extends CaldavReader{
   const accepted=method==='PROPPATCH'?[207]:method==='MKCALENDAR'?[201]:method==='DELETE'?[200,204]:[200,201,204];
   if(!accepted.includes(r.status)){const e=Error('CalDAV: HTTP '+r.status+' при '+method+'.');e.status=r.status;throw e;}
   if(method==='PROPPATCH'&&(!r.text||!require('./discovery').parseResponses(r.text).some(p=>p.get(DAV,'displayname'))))throw Error('Сервер не подтвердил название коллекции.');
-  return r.headers?.etag||r.headers?.ETag||'';
+  let version=this.etag(r.headers);
+  if(method==='PUT'&&!version){
+   // Some iOS/proxy responses omit ETag. Bind a version only after a conditional read
+   // confirms that it is still our uploaded content, never a concurrent phone edit.
+   const rows=await this.read(url,'PROPFIND','<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>');
+   const candidate=rows[0]?.get(DAV,'getetag')?.textContent?.trim();
+   if(candidate&&await this.matches(url,candidate,body))version=candidate;
+  }
+  return version;
  }
  async ensure(namespace,vault){
   const lists=await this.discover('ALL'),out={};
@@ -410,12 +428,45 @@ class CaldavReader{
 module.exports={CaldavReader,parseResponses};
 
 },
+"projection":function(module,exports,require){
+"use strict";
+const {localEpoch}=require('./time');
+const unescape=s=>(s||'').replace(/\\[nN]/g,'\n').replace(/\\([,;\\])/g,'$1');
+function fields(lines){return lines.map(l=>{const i=l.indexOf(':');if(i<0)return null;const [name,...rest]=l.slice(0,i).split(';'),params={};for(const r of rest){const e=r.indexOf('=');if(e>=0)params[r.slice(0,e).toUpperCase()]=r.slice(e+1).replace(/^"|"$/g,'');}return{name:name.toUpperCase(),params,value:l.slice(i+1)};}).filter(Boolean);}
+function timestamp(p,zone){
+ if(!p)return null;const m=p.value.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/);if(!m)throw Error('Unsupported date');
+ if(!m[4])return m[1]+'-'+m[2]+'-'+m[3];
+ return m[7]?Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]):localEpoch(m[1]+'-'+m[2]+'-'+m[3],m[4]+':'+m[5],p.params.TZID||zone)+(+m[6])*1000;
+}
+function comparable(ics,zone){
+ const lines=ics.replace(/\r?\n[ \t]/g,'').split(/\r?\n/),starts=lines.filter(l=>/^BEGIN:V(?:TODO|EVENT)$/.test(l));if(starts.length!==1)throw Error('Complex resource');
+ const component=starts[0].slice(6),from=lines.indexOf(starts[0]),top=[],alarms=[];let depth=0,block=[];
+ for(const l of lines.slice(from+1)){if(l==='END:'+component&&depth===0)break;if(l.startsWith('BEGIN:')){if(!depth)block=[];depth++;block.push(l);continue;}if(l.startsWith('END:')){block.push(l);depth--;if(!depth&&block[0]==='BEGIN:VALARM')alarms.push(block);continue;}if(depth)block.push(l);else top.push(l);}
+ const props=fields(top),get=n=>props.find(p=>p.name===n),start=timestamp(get('DTSTART'),zone),end=timestamp(get(component==='VEVENT'?'DTEND':'DUE'),zone),date=component==='VEVENT'?[start,end]:[end??start];
+ // Obsidian exposes minute precision; tolerate the compatibility second added to VTODO DUE.
+ const dates=date.map(t=>typeof t==='number'?Math.floor(t/60000):t);
+ const rule=(get('RRULE')?.value||'').toUpperCase().split(';').filter(Boolean).filter(x=>x!=='INTERVAL=1'&&x!=='WKST=MO').map(x=>/^BY[A-Z]+=/.test(x)?x.split('=')[0]+'='+x.split('=')[1].split(',').sort().join(','):x).sort().join(';');
+ const alarmValues=[];
+ for(const block of alarms){if(block.some(l=>/^(?:(?:X-APPLE-)?PROXIMITY|(?:X-APPLE-)?STRUCTURED-LOCATION|GEO)[;:]/i.test(l)))continue;const a=fields(block),trigger=a.find(p=>p.name==='TRIGGER'),action=a.find(p=>p.name==='ACTION')?.value||'DISPLAY';if(!trigger)throw Error('Missing trigger');let time;
+  const d=trigger.value.match(/^(-)?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/);
+  if(d){const anchor=trigger.params.RELATED==='END'?end:start;if(typeof anchor!=='number')throw Error('Missing alarm anchor');time=anchor+(d[1]?-1:1)*((+d[2]||0)*604800+(+d[3]||0)*86400+(+d[4]||0)*3600+(+d[5]||0)*60+(+d[6]||0))*1000;}
+  else time=timestamp(trigger,zone);
+  alarmValues.push([action,typeof time==='number'?Math.floor(time/60000):time,a.find(p=>p.name==='REPEAT')?.value||'',a.find(p=>p.name==='DURATION')?.value||'']);
+ }
+ const done=component==='VTODO'?['COMPLETED','CANCELLED'].includes(get('STATUS')?.value)||get('PERCENT-COMPLETE')?.value==='100':get('X-OBSIDIAN-COMPLETED')?.value==='TRUE'||/^✅\s/.test(unescape(get('SUMMARY')?.value));
+ const exceptional=props.filter(p=>['RDATE','EXDATE','RECURRENCE-ID'].includes(p.name)).map(p=>[p.name,p.params,p.value]);
+ return JSON.stringify([component,get('UID')?.value||'',unescape(get('SUMMARY')?.value),unescape(get('DESCRIPTION')?.value),get('URL')?.value||'',dates,done,rule,alarmValues.sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))),exceptional]);
+}
+function equivalent(actual,expected,zone){try{return comparable(actual,zone)===comparable(expected,zone);}catch{return false;}}
+module.exports={equivalent};
+
+},
 "engine":function(module,exports,require){
 "use strict";
 const {semantic,serialize}=require('./model');
 async function publish({tasks,transport,settings,vault,state,save,guard=async()=>{},log=()=>{}}){
  const collections=await transport.ensure(settings.namespace,vault),indexes={};for(const kind of ['reminders','calendar'])indexes[kind]=await transport.index(collections[kind]);
- const desired=new Map(),protectedIds=new Set(),issues=[],counts=new Map();let writes=0,deletes=0;
+ const desired=new Map(),protectedIds=new Set(),issues=[],counts=new Map(),changedIds=new Set();let writes=0,deletes=0;
  for(const t of tasks)if(t.id)counts.set(t.id,(counts.get(t.id)||0)+1);
  for(const task of tasks){if(!task.id)continue;if(counts.get(task.id)>1){protectedIds.add(task.id);issues.push({path:task.path,line:task.line,title:task.title,message:'Скопирована служебная метка. Удали метку у копии задачи; её записи пока сохранены без изменений.'});continue;}if(task.error){protectedIds.add(task.id);issues.push({path:task.path,line:task.line,title:task.title,message:task.error});continue;}if(task.selected)desired.set(task.id,task);}
  const href=(kind,id)=>new URL('an-'+settings.namespace+'-'+id+'.ics',collections[kind]).href;
@@ -426,16 +477,18 @@ async function publish({tasks,transport,settings,vault,state,save,guard=async()=
  // Delete the previous representation first: a failed move leaves a retryable gap, never a second reminder.
  for(const kind of ['reminders','calendar'])for(const [url,etag] of indexes[kind]){
   const id=ownId(url);if(!id||protectedIds.has(id))continue;const task=desired.get(id);if(task?.kind===kind)continue;
-  await guard();await transport.mutation('DELETE',url,undefined,etag);indexes[kind].delete(url);delete state[kind+':'+id];deletes++;await save();log('delete',kind,id);
+  await guard();await transport.mutation('DELETE',url,undefined,etag);indexes[kind].delete(url);delete state[kind+':'+id];deletes++;changedIds.add(id);await save();log('delete',kind,id);
  }
  for(const [id,task] of desired){
   const kind=task.kind,url=href(kind,id),etag=indexes[kind].get(url),key=kind+':'+id,hash=semantic(task,settings.timezone,settings.leadMinutes,vault),record=state[key];
   if(etag&&record?.hash===hash&&record.etag===etag)continue;
+  if(etag&&record?.hash===hash&&transport.matches&&await transport.matches(url,etag,payloads.get(id))){state[key]={hash,etag,path:task.path};await save();log('confirmed',kind,id);continue;}
   await guard();const body=payloads.get(id);
-  const nextEtag=await transport.mutation('PUT',url,body,etag);state[key]={hash,etag:nextEtag,path:task.path};writes++;await save();log('put',kind,id);
+  const reason=!etag?'создание':record?.hash!==hash?'изменения в Obsidian':!record.etag?'не была подтверждена версия записи':'изменения на сервере';
+  const nextEtag=await transport.mutation('PUT',url,body,etag);state[key]={hash,etag:nextEtag,path:task.path};writes++;changedIds.add(id);await save();log('put',kind,id,reason);
  }
  for(const key of Object.keys(state)){const [kind,id]=key.split(':');if(!desired.has(id)&&!protectedIds.has(id)&&!indexes[kind]?.has(href(kind,id)))delete state[key];}
- return {writes,deletes,issues,selected:desired.size,collections};
+ return {writes,deletes,changed:changedIds.size,issues,selected:desired.size,collections};
 }
 module.exports={publish};
 
