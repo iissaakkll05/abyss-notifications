@@ -1,0 +1,13 @@
+# Never commit a user's connection, sync state, vault copies or journals.
+data*.json
+*.log
+journal-*
+*.zip
+node_modules/
+.publish/
+.ui-profile/
+.browser-test.html
+.browser-*.png
+.enabled-next.json
+.DS_Store
+Thumbs.db

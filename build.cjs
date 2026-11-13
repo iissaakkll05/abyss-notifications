@@ -1,0 +1,4 @@
+const fs=require('node:fs'),path=require('node:path');
+const modules={};function add(name){if(modules[name])return;const source=fs.readFileSync(path.join(__dirname,name+'.js'),'utf8');modules[name]=source;for(const m of source.matchAll(/require\('\.\/([^']+)'\)/g))add(m[1]);}add('main.source');
+fs.writeFileSync(path.join(__dirname,'main.js'),'"use strict";\nconst nativeRequire=require;const factories={'+Object.entries(modules).map(([n,s])=>JSON.stringify(n)+':function(module,exports,require){\n'+s+'\n}').join(',\n')+'};const cache={};function localRequire(name){if(!name.startsWith("./"))return nativeRequire(name);const key=name.slice(2);if(!cache[key]){const m={exports:{}};cache[key]=m;factories[key](m,m.exports,localRequire);}return cache[key].exports;}module.exports=localRequire("./main.source");\n');
+console.log('Built '+Object.keys(modules).length+' bundled modules');

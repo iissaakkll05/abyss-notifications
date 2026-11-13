@@ -1,0 +1,65 @@
+name: Check and publish plugin
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Build and test
+        run: |
+          node build.cjs
+          node tests.cjs
+          node plugin.test.cjs
+          node mobile-network.test.cjs
+          node verify-release.cjs
+      - name: Check committed bundle matches source
+        run: git diff --exit-code -- main.js
+
+  publish:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Publish new version for BRAT
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p 'JSON.parse(require("fs").readFileSync("manifest.json","utf8")).version')"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists; leaving its assets unchanged."
+            exit 0
+          fi
+          node verify-release.cjs
+          gh release create "$VERSION" main.js manifest.json styles.css \
+            --target "$GITHUB_SHA" --title "$VERSION" \
+            --notes 'Abyss Notifications. Install this repository through BRAT. Files: main.js, manifest.json, styles.css. See README for configuration and supported task formats.'

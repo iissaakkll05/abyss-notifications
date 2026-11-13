@@ -1,0 +1,9 @@
+{
+  "id": "abyss-notifications",
+  "name": "Abyss Notifications",
+  "version": "1.0.5",
+  "minAppVersion": "1.5.7",
+  "description": "Из Obsidian в напоминания и календарь через CalDAV: одно время — напоминание, длительность — событие.",
+  "author": "Said",
+  "isDesktopOnly": false
+}
