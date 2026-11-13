@@ -5,13 +5,14 @@ const DAV='DAV:';
 const xml=s=>s.replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&apos;'}[c]));
 class Transport extends CaldavReader{
  etag(headers){return Object.entries(headers||{}).find(([key])=>key.toLowerCase()==='etag')?.[1]||'';}
- async matches(url,etag,body){
-  if(!etag)return false;
+ async resource(url,etag){
+  if(!etag)return null;const key=this.user+'\n'+url+'\n'+etag;if(this.resourceCache?.has(key))return this.resourceCache.get(key);
   const r=await this.request({url:this.safeUrl(url),method:'GET',headers:{Authorization:'Basic '+btoa(String.fromCharCode(...new TextEncoder().encode(this.user+':'+this.password))),'If-Match':etag},throw:false});
-  if(r.status===404||r.status===412)return false;if(r.status!==200)throw Error('CalDAV: HTTP '+r.status+' при GET.');
-  const version=this.etag(r.headers);if(version&&version!==etag)return false;
-  return equivalent(r.text||'',body,this.zone);
+  if(r.status===404||r.status===412)return null;if(r.status!==200)throw Error('CalDAV: HTTP '+r.status+' при GET.');
+  const version=this.etag(r.headers);if(version&&version!==etag)return null;
+  const body=r.text||'';if(this.resourceCache){if(this.resourceCache.size>=256)this.resourceCache.delete(this.resourceCache.keys().next().value);this.resourceCache.set(key,body);}return body;
  }
+ async matches(url,etag,body){const actual=await this.resource(url,etag);return actual!==null&&equivalent(actual,body,this.zone);}
  constructor(request,settings){super(request,settings);this.zone=settings.timezone||'Europe/Moscow';}
  async mutation(method,url,body,etag){
   if(!['PUT','DELETE','MKCALENDAR','PROPPATCH'].includes(method))throw Error('Неизвестная операция CalDAV.');

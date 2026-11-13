@@ -50,7 +50,7 @@ module.exports=class Notifications extends Plugin{
   this.log('Индекс заметок','чтений '+reads+', разборов '+parses);return tasks;
  }
  async assignIds(tasks,guard){
-  const repairs=recurrenceRepairs(tasks,this.settings.state),changes=[...repairs,...tasks.filter(t=>t.selected&&!t.error&&!t.id&&!t.done).map(task=>({task}))],byPath=new Map();
+  const repairs=recurrenceRepairs(tasks,this.settings.state),changes=[...repairs,...tasks.filter(t=>t.selected&&!t.error&&!t.id).map(task=>({task}))],byPath=new Map();
   for(const change of changes){if(!byPath.has(change.task.path))byPath.set(change.task.path,[]);byPath.get(change.task.path).push(change);}
   for(const [path,rows] of byPath){await guard();const file=this.app.vault.getAbstractFileByPath(path),entry=this.cache.get(path);if(!file)throw Error('Заметка ещё меняется.');const lines=entry.text.split(/\r?\n/);for(const {task:t,oldId}of rows){const next=uid();lines[t.line]=oldId?lines[t.line].replace(new RegExp('<!-- (?:dav|gcal):'+oldId+' -->'),'<!-- dav:'+next+' -->'):lines[t.line]+' <!-- dav:'+next+' -->';}const desired=lines.join(entry.text.includes('\r\n')?'\r\n':'\n');this.writing.add(path);try{await this.app.vault.process(file,current=>{if(current!==entry.text)throw Error('Заметка ещё меняется.');return desired;});const actual=await this.app.vault.read(file);if(actual!==desired){this.revision++;throw Error('Заметка ещё меняется.');}this.cache.set(path,{signature:file.stat.mtime+':'+file.stat.size,text:desired,tasks:parseFile(desired,path)});if(rows.some(r=>r.oldId))this.log('Восстановлены метки экземпляров повторяющейся задачи','количество '+rows.filter(r=>r.oldId).length);}finally{this.writing.delete(path);}}
   return [...this.cache.values()].flatMap(e=>e.tasks);
@@ -69,6 +69,7 @@ module.exports=class Notifications extends Plugin{
    this.errors=tasks.filter(t=>t.selected&&t.error).map(t=>({path:t.path,line:t.line,title:t.title,message:t.error}));
    const account=JSON.stringify([settings.server,settings.user]);if(this.settings.account!==account){this.settings.state={};this.settings.account=account;}
    const transport=new Transport(async p=>{await guard();requests++;this.log('Запрос',p.method+' → '+new URL(p.url).hostname);try{const r=await this.native(p);this.log('Ответ',p.method+' HTTP '+r.status);return r;}catch{throw Error('Нет ответа CalDAV. Проверь доступ к fruux из Obsidian; повторим при следующем обмене.');}},{davServer:settings.server,davUser:settings.user,davPassword:settings.password,timezone:settings.timezone,davHomeHint:this.settings.homeAccount===account?this.settings.home:''});
+   transport.resourceCache=this.remoteResources||(this.remoteResources=new Map());
    this.result=await publish({tasks,transport,settings,vault:this.app.vault.getName(),state:this.settings.state,guard,save:()=>this.save(),log:(op,kind,id,reason)=>this.log(op==='put'?'Запись отправлена':op==='confirmed'?'Версия подтверждена без повторной отправки':'Запись удалена',[kind,reason].filter(Boolean).join(' · '))});
    this.settings.home=transport.homeUrl;this.settings.homeAccount=account;this.errors=[...new Map([...this.errors,...this.result.issues].map(x=>[x.path+':'+x.line+':'+x.message,x])).values()];this.phase=(this.errors.length?'Частично: ':'Готово: ')+'изменено задач '+this.result.changed+(this.errors.length?'; пропущено '+this.errors.length:'');this.lastSuccess=new Date().toLocaleString();this.errorNotified=false;await this.save();if(manual)new Notice(this.phase,6000);
   }catch(e){if(e.deferred){this.phase=e.message;this.log('Тихий повтор');this.schedule();}else{this.phase=e.message;this.log('Ошибка',/^CalDAV: HTTP \d+ при [A-Z]+\.$/.test(e.message)?e.message:'Обмен не завершён; проверь подключение и состояние');if(manual||!this.errorNotified)new Notice('Abyss Notifications: '+e.message,7000);this.errorNotified=true;}}
@@ -78,7 +79,7 @@ module.exports=class Notifications extends Plugin{
 class Settings extends PluginSettingTab{
  constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
  display(){
-  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.7'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
+  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.8'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
   e.createEl('p',{text:p.legacyActive()?'Для запуска отключи старый Abyss Fruux Bridge.':p.phase||(p.allowed()?'Автоматический обмен разрешён на этом устройстве.':'На этом устройстве доступен ручной запуск.')});
   new Setting(e).setName('Обмен').addButton(b=>b.setButtonText('Синхронизировать').onClick(async()=>{await p.sync(true);this.display();}));
   new Setting(e).setName('Состояние и пропущенные задачи').addButton(b=>b.setButtonText('Открыть').onClick(()=>p.showStatus())).addButton(b=>b.setButtonText('Журнал').onClick(()=>p.showLog()));
@@ -91,6 +92,6 @@ class Settings extends PluginSettingTab{
   new Setting(e).setName('Пауза после ввода').addDropdown(d=>d.addOptions({'3':'3 секунды','5':'5 секунд','10':'10 секунд','15':'15 секунд'}).setValue(String(s.delaySeconds)).onChange(async v=>{s.delaySeconds=+v;await p.save();}));
   new Setting(e).setName('Проверять сервер').setDesc('Правки заметок отправляются после паузы ввода. Эта проверка восстанавливает изменения, сделанные в приложениях телефона.').addDropdown(d=>d.addOptions({'60':'Раз в минуту','300':'Раз в 5 минут','900':'Раз в 15 минут'}).setValue(String(s.pollSeconds)).onChange(async v=>{s.pollSeconds=+v;await p.save();p.restartPolling();}));
   new Setting(e).setName('Не читать эти пути').setDesc('Папки заканчивай знаком /. Один путь на строку.').addTextArea(t=>t.setValue(s.exclude).onChange(async v=>{s.exclude=v;await p.save();}));
-  e.createEl('p',{text:'Коллекции: '+p.app.vault.getName()+' — Напоминания / '+p.app.vault.getName()+' — Календарь. Изменения на телефоне не импортируются. Новые завершённые задачи не выгружаются. Данные подключения хранятся в настройках плагина в хранилище.'});
+  e.createEl('p',{text:'Коллекции: '+p.app.vault.getName()+' — Напоминания / '+p.app.vault.getName()+' — Календарь. Изменения на телефоне не импортируются. Завершённые задачи Obsidian тоже выгружаются. Данные подключения хранятся в настройках плагина в хранилище.'});
  }
 }

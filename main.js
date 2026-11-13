@@ -52,7 +52,7 @@ module.exports=class Notifications extends Plugin{
   this.log('Индекс заметок','чтений '+reads+', разборов '+parses);return tasks;
  }
  async assignIds(tasks,guard){
-  const repairs=recurrenceRepairs(tasks,this.settings.state),changes=[...repairs,...tasks.filter(t=>t.selected&&!t.error&&!t.id&&!t.done).map(task=>({task}))],byPath=new Map();
+  const repairs=recurrenceRepairs(tasks,this.settings.state),changes=[...repairs,...tasks.filter(t=>t.selected&&!t.error&&!t.id).map(task=>({task}))],byPath=new Map();
   for(const change of changes){if(!byPath.has(change.task.path))byPath.set(change.task.path,[]);byPath.get(change.task.path).push(change);}
   for(const [path,rows] of byPath){await guard();const file=this.app.vault.getAbstractFileByPath(path),entry=this.cache.get(path);if(!file)throw Error('Заметка ещё меняется.');const lines=entry.text.split(/\r?\n/);for(const {task:t,oldId}of rows){const next=uid();lines[t.line]=oldId?lines[t.line].replace(new RegExp('<!-- (?:dav|gcal):'+oldId+' -->'),'<!-- dav:'+next+' -->'):lines[t.line]+' <!-- dav:'+next+' -->';}const desired=lines.join(entry.text.includes('\r\n')?'\r\n':'\n');this.writing.add(path);try{await this.app.vault.process(file,current=>{if(current!==entry.text)throw Error('Заметка ещё меняется.');return desired;});const actual=await this.app.vault.read(file);if(actual!==desired){this.revision++;throw Error('Заметка ещё меняется.');}this.cache.set(path,{signature:file.stat.mtime+':'+file.stat.size,text:desired,tasks:parseFile(desired,path)});if(rows.some(r=>r.oldId))this.log('Восстановлены метки экземпляров повторяющейся задачи','количество '+rows.filter(r=>r.oldId).length);}finally{this.writing.delete(path);}}
   return [...this.cache.values()].flatMap(e=>e.tasks);
@@ -71,6 +71,7 @@ module.exports=class Notifications extends Plugin{
    this.errors=tasks.filter(t=>t.selected&&t.error).map(t=>({path:t.path,line:t.line,title:t.title,message:t.error}));
    const account=JSON.stringify([settings.server,settings.user]);if(this.settings.account!==account){this.settings.state={};this.settings.account=account;}
    const transport=new Transport(async p=>{await guard();requests++;this.log('Запрос',p.method+' → '+new URL(p.url).hostname);try{const r=await this.native(p);this.log('Ответ',p.method+' HTTP '+r.status);return r;}catch{throw Error('Нет ответа CalDAV. Проверь доступ к fruux из Obsidian; повторим при следующем обмене.');}},{davServer:settings.server,davUser:settings.user,davPassword:settings.password,timezone:settings.timezone,davHomeHint:this.settings.homeAccount===account?this.settings.home:''});
+   transport.resourceCache=this.remoteResources||(this.remoteResources=new Map());
    this.result=await publish({tasks,transport,settings,vault:this.app.vault.getName(),state:this.settings.state,guard,save:()=>this.save(),log:(op,kind,id,reason)=>this.log(op==='put'?'Запись отправлена':op==='confirmed'?'Версия подтверждена без повторной отправки':'Запись удалена',[kind,reason].filter(Boolean).join(' · '))});
    this.settings.home=transport.homeUrl;this.settings.homeAccount=account;this.errors=[...new Map([...this.errors,...this.result.issues].map(x=>[x.path+':'+x.line+':'+x.message,x])).values()];this.phase=(this.errors.length?'Частично: ':'Готово: ')+'изменено задач '+this.result.changed+(this.errors.length?'; пропущено '+this.errors.length:'');this.lastSuccess=new Date().toLocaleString();this.errorNotified=false;await this.save();if(manual)new Notice(this.phase,6000);
   }catch(e){if(e.deferred){this.phase=e.message;this.log('Тихий повтор');this.schedule();}else{this.phase=e.message;this.log('Ошибка',/^CalDAV: HTTP \d+ при [A-Z]+\.$/.test(e.message)?e.message:'Обмен не завершён; проверь подключение и состояние');if(manual||!this.errorNotified)new Notice('Abyss Notifications: '+e.message,7000);this.errorNotified=true;}}
@@ -80,7 +81,7 @@ module.exports=class Notifications extends Plugin{
 class Settings extends PluginSettingTab{
  constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
  display(){
-  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.7'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
+  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.8'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
   e.createEl('p',{text:p.legacyActive()?'Для запуска отключи старый Abyss Fruux Bridge.':p.phase||(p.allowed()?'Автоматический обмен разрешён на этом устройстве.':'На этом устройстве доступен ручной запуск.')});
   new Setting(e).setName('Обмен').addButton(b=>b.setButtonText('Синхронизировать').onClick(async()=>{await p.sync(true);this.display();}));
   new Setting(e).setName('Состояние и пропущенные задачи').addButton(b=>b.setButtonText('Открыть').onClick(()=>p.showStatus())).addButton(b=>b.setButtonText('Журнал').onClick(()=>p.showLog()));
@@ -93,7 +94,7 @@ class Settings extends PluginSettingTab{
   new Setting(e).setName('Пауза после ввода').addDropdown(d=>d.addOptions({'3':'3 секунды','5':'5 секунд','10':'10 секунд','15':'15 секунд'}).setValue(String(s.delaySeconds)).onChange(async v=>{s.delaySeconds=+v;await p.save();}));
   new Setting(e).setName('Проверять сервер').setDesc('Правки заметок отправляются после паузы ввода. Эта проверка восстанавливает изменения, сделанные в приложениях телефона.').addDropdown(d=>d.addOptions({'60':'Раз в минуту','300':'Раз в 5 минут','900':'Раз в 15 минут'}).setValue(String(s.pollSeconds)).onChange(async v=>{s.pollSeconds=+v;await p.save();p.restartPolling();}));
   new Setting(e).setName('Не читать эти пути').setDesc('Папки заканчивай знаком /. Один путь на строку.').addTextArea(t=>t.setValue(s.exclude).onChange(async v=>{s.exclude=v;await p.save();}));
-  e.createEl('p',{text:'Коллекции: '+p.app.vault.getName()+' — Напоминания / '+p.app.vault.getName()+' — Календарь. Изменения на телефоне не импортируются. Новые завершённые задачи не выгружаются. Данные подключения хранятся в настройках плагина в хранилище.'});
+  e.createEl('p',{text:'Коллекции: '+p.app.vault.getName()+' — Напоминания / '+p.app.vault.getName()+' — Календарь. Изменения на телефоне не импортируются. Завершённые задачи Obsidian тоже выгружаются. Данные подключения хранятся в настройках плагина в хранилище.'});
  }
 }
 
@@ -158,7 +159,7 @@ function duration(s){let m;if((m=s.match(/^(\d{1,3}):([0-5]\d)$/)))return +m[1]*
 const escape=s=>String(s||'').replace(/\\/g,'\\\\').replace(/\r?\n/g,'\\n').replace(/;/g,'\\;').replace(/,/g,'\\,');
 function fold(line){let out='',n=0;for(const c of line){const size=new TextEncoder().encode(c).length;if(n+size>75){out+='\r\n ';n=1;}out+=c;n+=size;}return out;}
 const utc=epoch=>new Date(epoch).toISOString().replace(/[-:]/g,'').replace(/\.\d{3}/,'');
-function semantic(task,zone,lead,vault){return JSON.stringify(['plain-description-v4',task.title,task.description,task.date,task.startDate,task.rangeDays,task.time,task.duration,task.done,task.rule,task.completed,task.created,task.path,zone,lead,vault]);}
+function semantic(task,zone,lead,vault){return JSON.stringify(['single-reminder-v5',task.title,task.description,task.date,task.startDate,task.rangeDays,task.time,task.duration,task.done,task.rule,task.completed,task.created,task.path,zone,lead,vault]);}
 function serialize(task,{namespace,zone,lead=0,vault,stamp=Date.now()}){
  const kind=task.kind==='calendar'?'VEVENT':'VTODO',eventDate=task.rangeDays?task.startDate:task.date,epoch=localEpoch(eventDate,task.time||'00:00',zone),title=(kind==='VEVENT'&&task.done?'✅ ':'')+task.title;
  // Local TZID retains the wall clock across daylight-saving changes in recurrences.
@@ -170,7 +171,7 @@ function serialize(task,{namespace,zone,lead=0,vault,stamp=Date.now()}){
  else{lines.push(task.time?'DUE;TZID='+zone+':'+start.slice(0,-2)+'01':'DUE;VALUE=DATE:'+task.date.replace(/-/g,''),'STATUS:'+(task.done?'COMPLETED':'NEEDS-ACTION'),'PERCENT-COMPLETE:'+(task.done?'100':'0'));if(task.done)lines.push('COMPLETED:'+utc(task.completed?localEpoch(task.completed,'12:00',zone):epoch));}
  if(task.created&&validDate(task.created))lines.push('CREATED:'+utc(localEpoch(task.created,'12:00',zone)));
  if(task.rangeDays)lines.push('RRULE:FREQ=DAILY;COUNT='+task.rangeDays);
- else if(task.rule&&!task.done)lines.push('RRULE:'+task.rule);
+ else if(kind==='VEVENT'&&task.rule&&!task.done)lines.push('RRULE:'+task.rule);
  if(!task.done&&task.time)lines.push('BEGIN:VALARM','ACTION:DISPLAY','DESCRIPTION:'+escape(task.title),'TRIGGER;RELATED=START:'+(lead?'-PT'+lead+'M':'PT0S'),'END:VALARM');
  lines.push('END:'+kind,'END:VCALENDAR');return lines.map(fold).join('\r\n')+'\r\n';
 }
@@ -256,13 +257,14 @@ const DAV='DAV:';
 const xml=s=>s.replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&apos;'}[c]));
 class Transport extends CaldavReader{
  etag(headers){return Object.entries(headers||{}).find(([key])=>key.toLowerCase()==='etag')?.[1]||'';}
- async matches(url,etag,body){
-  if(!etag)return false;
+ async resource(url,etag){
+  if(!etag)return null;const key=this.user+'\n'+url+'\n'+etag;if(this.resourceCache?.has(key))return this.resourceCache.get(key);
   const r=await this.request({url:this.safeUrl(url),method:'GET',headers:{Authorization:'Basic '+btoa(String.fromCharCode(...new TextEncoder().encode(this.user+':'+this.password))),'If-Match':etag},throw:false});
-  if(r.status===404||r.status===412)return false;if(r.status!==200)throw Error('CalDAV: HTTP '+r.status+' при GET.');
-  const version=this.etag(r.headers);if(version&&version!==etag)return false;
-  return equivalent(r.text||'',body,this.zone);
+  if(r.status===404||r.status===412)return null;if(r.status!==200)throw Error('CalDAV: HTTP '+r.status+' при GET.');
+  const version=this.etag(r.headers);if(version&&version!==etag)return null;
+  const body=r.text||'';if(this.resourceCache){if(this.resourceCache.size>=256)this.resourceCache.delete(this.resourceCache.keys().next().value);this.resourceCache.set(key,body);}return body;
  }
+ async matches(url,etag,body){const actual=await this.resource(url,etag);return actual!==null&&equivalent(actual,body,this.zone);}
  constructor(request,settings){super(request,settings);this.zone=settings.timezone||'Europe/Moscow';}
  async mutation(method,url,body,etag){
   if(!['PUT','DELETE','MKCALENDAR','PROPPATCH'].includes(method))throw Error('Неизвестная операция CalDAV.');
@@ -438,7 +440,7 @@ function timestamp(p,zone){
  if(!m[4])return m[1]+'-'+m[2]+'-'+m[3];
  return m[7]?Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]):localEpoch(m[1]+'-'+m[2]+'-'+m[3],m[4]+':'+m[5],p.params.TZID||zone)+(+m[6])*1000;
 }
-function comparable(ics,zone){
+function comparable(ics,zone,ignoreAlarms=false){
  const lines=ics.replace(/\r?\n[ \t]/g,'').split(/\r?\n/),starts=lines.filter(l=>/^BEGIN:V(?:TODO|EVENT)$/.test(l));if(starts.length!==1)throw Error('Complex resource');
  const component=starts[0].slice(6),from=lines.indexOf(starts[0]),top=[],alarms=[];let depth=0,block=[];
  for(const l of lines.slice(from+1)){if(l==='END:'+component&&depth===0)break;if(l.startsWith('BEGIN:')){if(!depth)block=[];depth++;block.push(l);continue;}if(l.startsWith('END:')){block.push(l);depth--;if(!depth&&block[0]==='BEGIN:VALARM')alarms.push(block);continue;}if(depth)block.push(l);else top.push(l);}
@@ -447,7 +449,7 @@ function comparable(ics,zone){
  const dates=date.map(t=>typeof t==='number'?Math.floor(t/60000):t);
  const rule=(get('RRULE')?.value||'').toUpperCase().split(';').filter(Boolean).filter(x=>x!=='INTERVAL=1'&&x!=='WKST=MO').map(x=>/^BY[A-Z]+=/.test(x)?x.split('=')[0]+'='+x.split('=')[1].split(',').sort().join(','):x).sort().join(';');
  const alarmValues=[];
- for(const block of alarms){if(block.some(l=>/^(?:(?:X-APPLE-)?PROXIMITY|(?:X-APPLE-)?STRUCTURED-LOCATION|GEO)[;:]/i.test(l)))continue;const a=fields(block),trigger=a.find(p=>p.name==='TRIGGER'),action=a.find(p=>p.name==='ACTION')?.value||'DISPLAY';if(!trigger)throw Error('Missing trigger');let time;
+ for(const block of ignoreAlarms?[]:alarms){if(block.some(l=>/^(?:(?:X-APPLE-)?PROXIMITY|(?:X-APPLE-)?STRUCTURED-LOCATION|GEO)[;:]/i.test(l)))continue;const a=fields(block),trigger=a.find(p=>p.name==='TRIGGER'),action=a.find(p=>p.name==='ACTION')?.value||'DISPLAY';if(!trigger)throw Error('Missing trigger');let time;
   const d=trigger.value.match(/^(-)?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/);
   if(d){const anchor=trigger.params.RELATED==='END'?end:start;if(typeof anchor!=='number')throw Error('Missing alarm anchor');time=anchor+(d[1]?-1:1)*((+d[2]||0)*604800+(+d[3]||0)*86400+(+d[4]||0)*3600+(+d[5]||0)*60+(+d[6]||0))*1000;}
   else time=timestamp(trigger,zone);
@@ -458,35 +460,50 @@ function comparable(ics,zone){
  return JSON.stringify([component,get('UID')?.value||'',unescape(get('SUMMARY')?.value),unescape(get('DESCRIPTION')?.value),get('URL')?.value||'',dates,done,rule,alarmValues.sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))),exceptional]);
 }
 function equivalent(actual,expected,zone){try{return comparable(actual,zone)===comparable(expected,zone);}catch{return false;}}
-module.exports={equivalent};
+function describeResource(ics,zone){try{const v=JSON.parse(comparable(ics,zone,true));return{component:v[0],uid:v[1],done:v[6],cloneKey:JSON.stringify([v[0],v[2],v[3],v[5]])};}catch{return null;}}
+module.exports={equivalent,describeResource};
 
 },
 "engine":function(module,exports,require){
 "use strict";
 const {semantic,serialize}=require('./model');
+const {describeResource}=require('./projection');
 async function publish({tasks,transport,settings,vault,state,save,guard=async()=>{},log=()=>{}}){
  const collections=await transport.ensure(settings.namespace,vault),indexes={};for(const kind of ['reminders','calendar'])indexes[kind]=await transport.index(collections[kind]);
  const desired=new Map(),protectedIds=new Set(),issues=[],counts=new Map(),changedIds=new Set();let writes=0,deletes=0;
  for(const t of tasks)if(t.id)counts.set(t.id,(counts.get(t.id)||0)+1);
  for(const task of tasks){if(!task.id)continue;if(counts.get(task.id)>1){protectedIds.add(task.id);issues.push({path:task.path,line:task.line,title:task.title,message:'Скопирована служебная метка. Удали метку у копии задачи; её записи пока сохранены без изменений.'});continue;}if(task.error){protectedIds.add(task.id);issues.push({path:task.path,line:task.line,title:task.title,message:task.error});continue;}if(task.selected)desired.set(task.id,task);}
- const href=(kind,id)=>new URL('an-'+settings.namespace+'-'+id+'.ics',collections[kind]).href;
- const ownId=url=>{const u=new URL(url),m=decodeURIComponent(u.pathname.split('/').pop()).match(new RegExp('^an-'+settings.namespace+'-([a-f0-9]{32})\\.ics$'));return m?.[1];};
- for(const [id,task] of desired)if(task.done&&!['reminders','calendar'].some(k=>indexes[k].has(href(k,id))||state[k+':'+id]))desired.delete(id);
+ const canonicalHref=(kind,id)=>new URL('an-'+settings.namespace+'-'+id+'.ics',collections[kind]).href,paths=new Map(),knownPaths=new Map(),cleanup=[];
+ const href=(kind,id)=>paths.get(kind+':'+id)||canonicalHref(kind,id);
+ const ownId=url=>{const u=new URL(url),m=decodeURIComponent(u.pathname.split('/').pop()).match(new RegExp('^an-'+settings.namespace+'-([a-f0-9]{32})\\.ics$'));return m?.[1]||knownPaths.get(url);};
+ for(const [key,record]of Object.entries(state)){const [kind,id]=key.split(':');if(!indexes[kind]||!/^[a-f0-9]{32}$/.test(id)||!record.href||!indexes[kind].has(record.href)||!record.href.startsWith(collections[kind]))continue;if(!indexes[kind].has(canonicalHref(kind,id)))paths.set(key,record.href);knownPaths.set(record.href,id);}
  // Validate every desired payload before deleting or moving any record.
  const payloads=new Map();for(const [id,task] of desired)try{payloads.set(id,serialize(task,{namespace:settings.namespace,zone:settings.timezone,lead:settings.leadMinutes,vault}));}catch(e){protectedIds.add(id);desired.delete(id);issues.push({path:task.path,line:task.line,title:task.title,message:e.message});}
+ const cloneKeys=new Map();for(const [id,task]of desired){if(task.kind!=='reminders')continue;const meta=describeResource(payloads.get(id),settings.timezone);if(meta){if(!cloneKeys.has(meta.cloneKey))cloneKeys.set(meta.cloneKey,[]);cloneKeys.get(meta.cloneKey).push(id);}}
+ // Apple may move a resource, or complete a recurring reminder by creating a new UID.
+ // Adopt unchanged UIDs; only remove completed foreign copies that match a source task
+ // by title, description and exact date/time. Unrelated native entries are preserved.
+ if(transport.resource)for(const kind of ['reminders','calendar'])for(const [url,etag]of indexes[kind]){
+  if(ownId(url))continue;await guard();const ics=await transport.resource(url,etag);if(ics===null)continue;const meta=describeResource(ics,settings.timezone);if(!meta)continue;
+  const namespace=meta.uid.match(/^an-([a-f0-9]{32})-[a-f0-9]{32}(?:@obsidian)?$/)?.[1];if(namespace&&namespace!==settings.namespace)continue;
+  const match=meta.uid.match(new RegExp('^an-'+settings.namespace+'-([a-f0-9]{32})(?:@obsidian)?$')),id=match?.[1];
+  if(id){knownPaths.set(url,id);if(protectedIds.has(id))continue;if(desired.get(id)?.kind===kind&&!indexes[kind].has(canonicalHref(kind,id))&&!paths.has(kind+':'+id))paths.set(kind+':'+id,url);else cleanup.push({url,etag,kind,id});}
+  else if(kind==='reminders'&&meta.component==='VTODO'&&meta.done&&cloneKeys.has(meta.cloneKey)){const ids=cloneKeys.get(meta.cloneKey);if(ids.length===1)cleanup.push({url,etag,kind,id:ids[0]});}
+ }
  // Delete the previous representation first: a failed move leaves a retryable gap, never a second reminder.
  for(const kind of ['reminders','calendar'])for(const [url,etag] of indexes[kind]){
-  const id=ownId(url);if(!id||protectedIds.has(id))continue;const task=desired.get(id);if(task?.kind===kind)continue;
+  const id=ownId(url);if(!id||protectedIds.has(id))continue;const task=desired.get(id);if(task?.kind===kind){if(url!==href(kind,id)&&!cleanup.some(x=>x.url===url))cleanup.push({url,etag,kind,id});continue;}
   await guard();await transport.mutation('DELETE',url,undefined,etag);indexes[kind].delete(url);delete state[kind+':'+id];deletes++;changedIds.add(id);await save();log('delete',kind,id);
  }
  for(const [id,task] of desired){
   const kind=task.kind,url=href(kind,id),etag=indexes[kind].get(url),key=kind+':'+id,hash=semantic(task,settings.timezone,settings.leadMinutes,vault),record=state[key];
-  if(etag&&record?.hash===hash&&record.etag===etag)continue;
-  if(etag&&record?.hash===hash&&transport.matches&&await transport.matches(url,etag,payloads.get(id))){state[key]={hash,etag,path:task.path};await save();log('confirmed',kind,id);continue;}
+  if(etag&&record?.hash===hash&&record.etag===etag){if(record.href!==url){record.href=url;await save();}continue;}
+  if(etag&&record?.hash===hash&&transport.matches&&await transport.matches(url,etag,payloads.get(id))){state[key]={hash,etag,path:task.path,href:url};await save();log('confirmed',kind,id);continue;}
   await guard();const body=payloads.get(id);
   const reason=!etag?'создание':record?.hash!==hash?'изменения в Obsidian':!record.etag?'не была подтверждена версия записи':'изменения на сервере';
-  const nextEtag=await transport.mutation('PUT',url,body,etag);state[key]={hash,etag:nextEtag,path:task.path};writes++;changedIds.add(id);await save();log('put',kind,id,reason);
+  const nextEtag=await transport.mutation('PUT',url,body,etag);state[key]={hash,etag:nextEtag,path:task.path,href:url};writes++;changedIds.add(id);await save();log('put',kind,id,reason);
  }
+ for(const item of cleanup){if(protectedIds.has(item.id)||!indexes[item.kind].has(item.url)||item.url===href(item.kind,item.id)&&desired.get(item.id)?.kind===item.kind)continue;await guard();await transport.mutation('DELETE',item.url,undefined,item.etag);indexes[item.kind].delete(item.url);deletes++;changedIds.add(item.id);log('delete',item.kind,item.id,'выполненная копия или лишняя запись той же задачи');}
  for(const key of Object.keys(state)){const [kind,id]=key.split(':');if(!desired.has(id)&&!protectedIds.has(id)&&!indexes[kind]?.has(href(kind,id)))delete state[key];}
  return {writes,deletes,changed:changedIds.size,issues,selected:desired.size,collections};
 }

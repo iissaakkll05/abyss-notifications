@@ -7,7 +7,7 @@ function timestamp(p,zone){
  if(!m[4])return m[1]+'-'+m[2]+'-'+m[3];
  return m[7]?Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]):localEpoch(m[1]+'-'+m[2]+'-'+m[3],m[4]+':'+m[5],p.params.TZID||zone)+(+m[6])*1000;
 }
-function comparable(ics,zone){
+function comparable(ics,zone,ignoreAlarms=false){
  const lines=ics.replace(/\r?\n[ \t]/g,'').split(/\r?\n/),starts=lines.filter(l=>/^BEGIN:V(?:TODO|EVENT)$/.test(l));if(starts.length!==1)throw Error('Complex resource');
  const component=starts[0].slice(6),from=lines.indexOf(starts[0]),top=[],alarms=[];let depth=0,block=[];
  for(const l of lines.slice(from+1)){if(l==='END:'+component&&depth===0)break;if(l.startsWith('BEGIN:')){if(!depth)block=[];depth++;block.push(l);continue;}if(l.startsWith('END:')){block.push(l);depth--;if(!depth&&block[0]==='BEGIN:VALARM')alarms.push(block);continue;}if(depth)block.push(l);else top.push(l);}
@@ -16,7 +16,7 @@ function comparable(ics,zone){
  const dates=date.map(t=>typeof t==='number'?Math.floor(t/60000):t);
  const rule=(get('RRULE')?.value||'').toUpperCase().split(';').filter(Boolean).filter(x=>x!=='INTERVAL=1'&&x!=='WKST=MO').map(x=>/^BY[A-Z]+=/.test(x)?x.split('=')[0]+'='+x.split('=')[1].split(',').sort().join(','):x).sort().join(';');
  const alarmValues=[];
- for(const block of alarms){if(block.some(l=>/^(?:(?:X-APPLE-)?PROXIMITY|(?:X-APPLE-)?STRUCTURED-LOCATION|GEO)[;:]/i.test(l)))continue;const a=fields(block),trigger=a.find(p=>p.name==='TRIGGER'),action=a.find(p=>p.name==='ACTION')?.value||'DISPLAY';if(!trigger)throw Error('Missing trigger');let time;
+ for(const block of ignoreAlarms?[]:alarms){if(block.some(l=>/^(?:(?:X-APPLE-)?PROXIMITY|(?:X-APPLE-)?STRUCTURED-LOCATION|GEO)[;:]/i.test(l)))continue;const a=fields(block),trigger=a.find(p=>p.name==='TRIGGER'),action=a.find(p=>p.name==='ACTION')?.value||'DISPLAY';if(!trigger)throw Error('Missing trigger');let time;
   const d=trigger.value.match(/^(-)?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/);
   if(d){const anchor=trigger.params.RELATED==='END'?end:start;if(typeof anchor!=='number')throw Error('Missing alarm anchor');time=anchor+(d[1]?-1:1)*((+d[2]||0)*604800+(+d[3]||0)*86400+(+d[4]||0)*3600+(+d[5]||0)*60+(+d[6]||0))*1000;}
   else time=timestamp(trigger,zone);
@@ -27,4 +27,5 @@ function comparable(ics,zone){
  return JSON.stringify([component,get('UID')?.value||'',unescape(get('SUMMARY')?.value),unescape(get('DESCRIPTION')?.value),get('URL')?.value||'',dates,done,rule,alarmValues.sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))),exceptional]);
 }
 function equivalent(actual,expected,zone){try{return comparable(actual,zone)===comparable(expected,zone);}catch{return false;}}
-module.exports={equivalent};
+function describeResource(ics,zone){try{const v=JSON.parse(comparable(ics,zone,true));return{component:v[0],uid:v[1],done:v[6],cloneKey:JSON.stringify([v[0],v[2],v[3],v[5]])};}catch{return null;}}
+module.exports={equivalent,describeResource};

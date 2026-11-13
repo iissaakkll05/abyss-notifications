@@ -57,7 +57,7 @@ function duration(s){let m;if((m=s.match(/^(\d{1,3}):([0-5]\d)$/)))return +m[1]*
 const escape=s=>String(s||'').replace(/\\/g,'\\\\').replace(/\r?\n/g,'\\n').replace(/;/g,'\\;').replace(/,/g,'\\,');
 function fold(line){let out='',n=0;for(const c of line){const size=new TextEncoder().encode(c).length;if(n+size>75){out+='\r\n ';n=1;}out+=c;n+=size;}return out;}
 const utc=epoch=>new Date(epoch).toISOString().replace(/[-:]/g,'').replace(/\.\d{3}/,'');
-function semantic(task,zone,lead,vault){return JSON.stringify(['plain-description-v4',task.title,task.description,task.date,task.startDate,task.rangeDays,task.time,task.duration,task.done,task.rule,task.completed,task.created,task.path,zone,lead,vault]);}
+function semantic(task,zone,lead,vault){return JSON.stringify(['single-reminder-v5',task.title,task.description,task.date,task.startDate,task.rangeDays,task.time,task.duration,task.done,task.rule,task.completed,task.created,task.path,zone,lead,vault]);}
 function serialize(task,{namespace,zone,lead=0,vault,stamp=Date.now()}){
  const kind=task.kind==='calendar'?'VEVENT':'VTODO',eventDate=task.rangeDays?task.startDate:task.date,epoch=localEpoch(eventDate,task.time||'00:00',zone),title=(kind==='VEVENT'&&task.done?'✅ ':'')+task.title;
  // Local TZID retains the wall clock across daylight-saving changes in recurrences.
@@ -69,7 +69,7 @@ function serialize(task,{namespace,zone,lead=0,vault,stamp=Date.now()}){
  else{lines.push(task.time?'DUE;TZID='+zone+':'+start.slice(0,-2)+'01':'DUE;VALUE=DATE:'+task.date.replace(/-/g,''),'STATUS:'+(task.done?'COMPLETED':'NEEDS-ACTION'),'PERCENT-COMPLETE:'+(task.done?'100':'0'));if(task.done)lines.push('COMPLETED:'+utc(task.completed?localEpoch(task.completed,'12:00',zone):epoch));}
  if(task.created&&validDate(task.created))lines.push('CREATED:'+utc(localEpoch(task.created,'12:00',zone)));
  if(task.rangeDays)lines.push('RRULE:FREQ=DAILY;COUNT='+task.rangeDays);
- else if(task.rule&&!task.done)lines.push('RRULE:'+task.rule);
+ else if(kind==='VEVENT'&&task.rule&&!task.done)lines.push('RRULE:'+task.rule);
  if(!task.done&&task.time)lines.push('BEGIN:VALARM','ACTION:DISPLAY','DESCRIPTION:'+escape(task.title),'TRIGGER;RELATED=START:'+(lead?'-PT'+lead+'M':'PT0S'),'END:VALARM');
  lines.push('END:'+kind,'END:VCALENDAR');return lines.map(fold).join('\r\n')+'\r\n';
 }

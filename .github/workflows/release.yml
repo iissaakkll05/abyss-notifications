@@ -31,6 +31,7 @@ jobs:
           node plugin.test.cjs
           node identity.test.cjs
           node projection.test.cjs
+          node mirror.test.cjs
           node mobile-network.test.cjs
           node verify-release.cjs
       - name: Check committed bundle matches source
