@@ -23,6 +23,15 @@ class JournalModal extends Modal {
  }
  onClose() { this.plugin.logListeners.delete(this.render); }
 }
+function groupIssues(issues) {
+ const rows = new Map();
+ for (const issue of issues) {
+  const key = JSON.stringify([issue.path, issue.line]);
+  if (!rows.has(key)) rows.set(key, {...issue, messages:new Set()});
+  rows.get(key).messages.add(issue.message);
+ }
+ return [...rows.values()].map(row => ({...row, message:[...row.messages].join(' · ')}));
+}
 function hideMarkers(owner){return ViewPlugin.fromClass(class{
  constructor(view){this.update({view});}update({view}){const ranges=[];if(owner.settings.hideMarkers)for(const v of view.visibleRanges){const start=view.state.doc.lineAt(v.from).from,end=view.state.doc.lineAt(v.to).to,text=view.state.doc.sliceString(start,end);for(const m of text.matchAll(/<!-- (?:dav|gcal):[a-f0-9]{32} -->/g))ranges.push(Decoration.replace({}).range(start+m.index,start+m.index+m[0].length));}this.decorations=Decoration.set([...new Map(ranges.map(r=>[r.from,r])).values()].sort((a,b)=>a.from-b.from));}
  },{decorations:v=>v.decorations,provide:p=>EditorView.atomicRanges.of(v=>v.plugin(p)?.decorations||Decoration.none)});}
@@ -114,7 +123,7 @@ module.exports=class Notifications extends Plugin{
    const transport=new Transport(async p=>{await guard();requests++;this.log('Запрос',p.method+' → '+new URL(p.url).hostname);try{const r=await this.native(p);this.log('Ответ',p.method+' HTTP '+r.status);return r;}catch(error){if(error?.code==='DAV_TIMEOUT'||error?.code==='DAV_IN_FLIGHT')throw error;throw Error('Нет ответа CalDAV. Проверь доступ к fruux из Obsidian; повторим при следующем обмене.');}},{davServer:settings.server,davUser:settings.user,davPassword:settings.password,timezone:settings.timezone,davHomeHint:this.settings.homeAccount===account?this.settings.home:''});
    transport.resourceCache=this.remoteResources||(this.remoteResources=new Map());
    this.result=await publish({tasks,transport,settings,vault:this.app.vault.getName(),state:this.settings.state,guard,save:()=>this.save(),log:(op,kind,id,reason)=>this.log(op==='put'?'Запись отправлена':op==='confirmed'?'Версия подтверждена без повторной отправки':'Запись удалена',[kind,reason].filter(Boolean).join(' · '))});
-   this.settings.home=transport.homeUrl;this.settings.homeAccount=account;this.errors=[...new Map([...this.errors,...this.result.issues].map(x=>[x.path+':'+x.line+':'+x.message,x])).values()];this.phase=(this.errors.length?'Частично: ':'Готово: ')+'изменено задач '+this.result.changed+(this.errors.length?'; пропущено '+this.errors.length:'');this.lastSuccess=new Date().toLocaleString();await this.save();
+   this.settings.home=transport.homeUrl;this.settings.homeAccount=account;this.errors=groupIssues([...this.errors,...this.result.issues]);this.phase=(this.errors.length?'Частично: ':'Готово: ')+'изменено задач '+this.result.changed+(this.errors.length?'; пропущено '+this.errors.length:'');this.lastSuccess=new Date().toLocaleString();await this.save();
    const recovered = this.failures > 0;
    if(recovered) this.setRetry(false);
    if(!this.errors.length && (manual || recovered || this.result.changed)) new Notice(this.phase,4500);
@@ -130,7 +139,7 @@ module.exports=class Notifications extends Plugin{
 class Settings extends PluginSettingTab{
  constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
  display(){
-  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.9'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
+  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.10'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
   e.createEl('p',{text:p.legacyActive()?'Для запуска отключи старый Abyss Fruux Bridge.':p.phase||(p.allowed()?'Автоматический обмен разрешён на этом устройстве.':'На этом устройстве доступен ручной запуск.')});
   new Setting(e).setName('Обмен').addButton(b=>b.setButtonText('Синхронизировать').onClick(async()=>{await p.sync(true);this.display();}));
   new Setting(e).setName('Состояние и пропущенные задачи').addButton(b=>b.setButtonText('Открыть').onClick(()=>p.showStatus())).addButton(b=>b.setButtonText('Журнал').onClick(()=>p.showLog()));
@@ -153,6 +162,7 @@ class Settings extends PluginSettingTab{
 const {validDate,recurrence}=require('./recurrence');
 const {localEpoch,localParts,timezoneComponent}=require('./time');
 const marker=/<!-- (?:dav|gcal):([a-f0-9]{32}) -->/g;
+const durationField = /⏱\uFE0F?\s*(\d{1,3}:[0-5]\d|\d+h(?:\s*\d+m)?|\d+m)(?![\p{L}\p{N}_:.])/u;
 const taskLine=/^(\s*)(?:[-*+]|\d+[.)])\s+\[([^\]])\]\s+(.*)$/;
 const indent=line=>{let n=0;for(const c of line.match(/^\s*/)[0])n=c==='\t'?n+4-n%4:n+1;return n;};
 function descriptionFor(lines,index){
@@ -179,12 +189,13 @@ function parseFile(text,path){
   task.date=task.dueDate||date('⏳','scheduled')||task.startDate||'';
   const clock=raw.match(/(?:⏰\s*|\[time::\s*)(\d{1,2}:\d{2})(?:\s*[-–—]\s*(\d{1,2}:\d{2}))?/)||raw.match(/^(?:#[\p{L}\p{N}_/-]+\s+)*(\d{1,2}:\d{2})(?:\s*[-–—]\s*(\d{1,2}:\d{2}))?(?=\s)/u);
   task.time=clock?.[1]?.padStart(5,'0')||'';task.duration=0;
-  const dur=raw.match(/⏱\uFE0F?\s*([^📅⏳🛫🔁➕✅❌<\[]+)/u)?.[1]?.trim()||raw.match(/\[duration::\s*([^\]]+)\]/)?.[1]?.trim();
+  const durationMatch = raw.match(durationField);
+  const dur = durationMatch?.[1] || raw.match(/\[duration::\s*([^\]]+)\]/)?.[1]?.trim();
   if(clock?.[2]){const end=clock[2].padStart(5,'0');task.duration=minutes(end)-minutes(task.time);if(task.duration<0)task.duration+=1440;if(!validTime(end)||task.duration===0)task.error='Некорректное окончание интервала';}
-  if(dur){const d=duration(dur);if(!d||task.duration&&task.duration!==d)task.error='Некорректная или противоречивая длительность';else task.duration=d;}
+  if(dur){const d=duration(dur.replace(/h\s+(?=\d+m$)/,'h'));if((!d && !/^(?:0+h(?:\s*0+m)?|0+m|0{1,3}:00)$/.test(dur)) || (task.duration && task.duration!==d))task.error='Некорректная или противоречивая длительность';else task.duration=d;}
   task.kind=task.time&&task.duration?'calendar':'reminders';
   if(task.date&&!validDate(task.date))task.error='Некорректная дата';if(task.time&&!validTime(task.time))task.error='Некорректное время';
-  if(/[⏱]/u.test(raw)&&!dur)task.error='Не указана длительность';
+  if(raw.includes('⏱') && !durationMatch)task.error='Некорректная длительность после ⏱️';
   const repeat=raw.match(/🔁\s*(.*?)(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/u)?.[1]?.trim()||raw.match(/\[repeat::\s*([^\]]+)\]/)?.[1]?.trim()||'';
   task.repeatText=repeat;task.whenDone=/\bwhen done$/i.test(repeat);
   // A completion-relative repeat is scheduled by Obsidian, never guessed on the server.
@@ -196,7 +207,7 @@ function parseFile(text,path){
     else task.rangeDays=Math.round((Date.parse(task.dueDate+'T12:00:00Z')-Date.parse(task.startDate+'T12:00:00Z'))/86400000)+1;
    }
   }
-  task.title=raw.replace(marker,'').replace(/[📅⏳🛫➕✅❌]\s*\d{4}-\d{2}-\d{2}/gu,'').replace(/🔁\s*.*?(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/gu,'').replace(/⏱\uFE0F?\s*[^📅⏳🛫🔁➕✅❌<\[]+/gu,'').replace(/⏰\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?/g,'').replace(/\[(?:due|scheduled|start|repeat|time|duration)::[^\]]*\]/g,'').replace(/(^|\s)#[\p{L}\p{N}_/-]+/gu,'$1').replace(/^\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?\s+/,'').replace(/\s+/g,' ').trim();
+  task.title=raw.replace(marker,'').replace(/[📅⏳🛫➕✅❌]\s*\d{4}-\d{2}-\d{2}/gu,'').replace(/🔁\s*.*?(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/gu,'').replace(durationField,'').replace(/(?:^|\s)[🔺⏫🔼🔽⏬](?=\s|$)/gu,' ').replace(/⏰\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?/g,'').replace(/\[(?:due|scheduled|start|repeat|time|duration)::[^\]]*\]/g,'').replace(/(^|\s)#[\p{L}\p{N}_/-]+/gu,'$1').replace(/^\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?\s+/,'').replace(/\s+/g,' ').trim();
   task.description=descriptionFor(lines,i);task.completed=date('✅','completion')||'';task.created=date('➕','created')||'';
   task.selected=task.eligible&&!!task.date;
   if(task.selected&&!task.title)task.error='Пустое название';tasks.push(task);
@@ -572,7 +583,7 @@ function recurrenceRepairs(tasks,state={}){
   const families=new Set(rows.map(family).filter(Boolean));if(families.size!==1||rows.some(t=>!t.done&&!family(t)||t.title!==rows[0].title))continue;
   if(new Set(rows.map(t=>t.date)).size!==rows.length||rows.some(t=>(t.rawLine.match(/<!-- (?:dav|gcal):[a-f0-9]{32} -->/g)||[]).length!==1))continue;
   const records=['reminders','calendar'].map(k=>state[k+':'+id]).filter(Boolean),dates=new Set();
-  for(const record of records){try{const hash=JSON.parse(record.hash);if(Array.isArray(hash)&&hash[1]===rows[0].title&&/^\d{4}-\d{2}-\d{2}$/.test(hash[3]))dates.add(hash[3]);}catch{/* Earliest generation remains the fallback when no usable checkpoint exists. */}}
+  for(const record of records){try{const hash=JSON.parse(record.hash);if(Array.isArray(hash)&&typeof hash[1]==='string'&&hash[1].replace(/(?:^|\s)[🔺⏫🔼🔽⏬](?=\s|$)/gu,' ').replace(/\s+/g,' ').trim()===rows[0].title&&/^\d{4}-\d{2}-\d{2}$/.test(hash[3]))dates.add(hash[3]);}catch{/* Earliest generation remains the fallback when no usable checkpoint exists. */}}
   if(dates.size>1)continue;
   const savedDate=[...dates][0],keeper=rows.find(t=>t.date===savedDate)||rows.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.path.localeCompare(b.path)||a.line-b.line)[0];
   for(const t of rows)if(t!==keeper)result.push({task:t,oldId:id});

@@ -31,5 +31,23 @@ let n=0;async function test(name,fn){await fn();console.log('OK '+name);n++;}
  await test('when-done and regular instances complete and reopen with correct alarm status',async()=>{for(const repeat of ['', ' 🔁 every day when done']){const f=await fixture({},'both'),p=f.plugin,note=f.add('note.md','- [ ] #task/regular Repeat'+repeat+' ⏰ 13:00 📅 2026-11-13');await p.sync(true);assert.equal(p.errors.length,0);const url=[...f.objects.reminders.keys()][0];if(repeat)assert.doesNotMatch(f.objects.reminders.get(url).body,/RRULE:/);f.edit(note,note.text.replace('[ ]','[x]')+' ✅ 2026-11-13');await p.sync(true);assert.match(f.objects.reminders.get(url).body,/STATUS:COMPLETED/);assert.doesNotMatch(f.objects.reminders.get(url).body,/VALARM/);f.edit(note,note.text.replace('[x]','[ ]'));await p.sync(true);assert.match(f.objects.reminders.get(url).body,/STATUS:NEEDS-ACTION/);assert.match(f.objects.reminders.get(url).body,/VALARM/);p.onunload();}});
  await test('manual sync reports partial success and preserves ambiguous copies while sending other tasks',async()=>{const f=await fixture({},'both'),p=f.plugin,id='b'.repeat(32);f.add('note.md','- [ ] #task/inbox Copy 📅 2026-11-13 <!-- dav:'+id+' -->\n- [ ] #task/inbox Copy 📅 2026-11-13 <!-- dav:'+id+' -->\n- [ ] #task/inbox Other 📅 2026-11-13');await f.commands.get('sync').callback();assert.equal(p.errors.length,2);assert.match(p.phase,/Частично/);assert.equal(f.objects.reminders.size,1);p.onunload();});
  await test('initially completed dated tasks receive an ID and are exported as completed',async()=>{const f=await fixture({isMobileApp:true,isIosApp:true},'mobile'),p=f.plugin,note=f.add('note.md','- [x] #task/inbox Done 📅 2026-11-13 ✅ 2026-11-13\n- [x] plain 📅 2026-11-13');await p.sync(true);assert.equal(f.objects.reminders.size,1);assert.equal(note.text.match(/<!-- dav:/g).length,1);assert.match([...f.objects.reminders.values()][0].body,/STATUS:COMPLETED/);const before={...f.stats};await p.sync(true);assert.equal(f.stats.serverWrites,before.serverWrites);assert.equal(f.stats.noteWrites,before.noteWrites);p.onunload();});
+ await test('Abyss duration followed by priority: move the old reminder, complete past events and keep the next slot',async()=>{
+  const f=await fixture({},'both'), p=f.plugin, marker=' <!-- dav:'+'c'.repeat(32)+' -->';
+  const row=(box,date,time,duration)=>'- ['+box+'] Lesson #task/regular #category/study ⏰ '+time+' '+duration+'🔺 🔁 every day ➕ 2026-11-12 📅 '+date+marker+(box==='x'?' ✅ '+date:'');
+  const note=f.add('daily.md',row(' ','2026-11-17','12:30',''));
+  await p.sync(true);
+  assert.equal(f.objects.reminders.size,1);
+  f.edit(note,[row(' ','2026-11-19','12:25','⏱️ 30m '),row('x','2026-11-17','12:30','⏱️ 30m '),row('x','2026-11-16','12:30','⏱️ 30m ')].join('\n'));
+  await p.sync(true);
+  assert.equal(p.errors.length,0);
+  assert.equal(f.objects.reminders.size,0);
+  assert.equal(f.objects.calendar.size,3);
+  const bodies=[...f.objects.calendar.values()].map(r=>r.body);
+  assert.equal(bodies.filter(b=>b.includes('SUMMARY:✅ Lesson\r\n')).length,2);
+  const open=bodies.find(b=>b.includes('SUMMARY:Lesson\r\n'));
+  assert.match(open,/20261119T122500/);assert.match(open,/20261119T125500/);
+  assert.ok(note.text.split('\n')[1].includes(marker));
+  await p.sync(true);assert.equal(p.result.changed,0);p.onunload();
+ });
  console.log(n+' plugin integration scenario groups passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

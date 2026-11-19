@@ -2,6 +2,7 @@
 const {validDate,recurrence}=require('./recurrence');
 const {localEpoch,localParts,timezoneComponent}=require('./time');
 const marker=/<!-- (?:dav|gcal):([a-f0-9]{32}) -->/g;
+const durationField = /⏱\uFE0F?\s*(\d{1,3}:[0-5]\d|\d+h(?:\s*\d+m)?|\d+m)(?![\p{L}\p{N}_:.])/u;
 const taskLine=/^(\s*)(?:[-*+]|\d+[.)])\s+\[([^\]])\]\s+(.*)$/;
 const indent=line=>{let n=0;for(const c of line.match(/^\s*/)[0])n=c==='\t'?n+4-n%4:n+1;return n;};
 function descriptionFor(lines,index){
@@ -28,12 +29,13 @@ function parseFile(text,path){
   task.date=task.dueDate||date('⏳','scheduled')||task.startDate||'';
   const clock=raw.match(/(?:⏰\s*|\[time::\s*)(\d{1,2}:\d{2})(?:\s*[-–—]\s*(\d{1,2}:\d{2}))?/)||raw.match(/^(?:#[\p{L}\p{N}_/-]+\s+)*(\d{1,2}:\d{2})(?:\s*[-–—]\s*(\d{1,2}:\d{2}))?(?=\s)/u);
   task.time=clock?.[1]?.padStart(5,'0')||'';task.duration=0;
-  const dur=raw.match(/⏱\uFE0F?\s*([^📅⏳🛫🔁➕✅❌<\[]+)/u)?.[1]?.trim()||raw.match(/\[duration::\s*([^\]]+)\]/)?.[1]?.trim();
+  const durationMatch = raw.match(durationField);
+  const dur = durationMatch?.[1] || raw.match(/\[duration::\s*([^\]]+)\]/)?.[1]?.trim();
   if(clock?.[2]){const end=clock[2].padStart(5,'0');task.duration=minutes(end)-minutes(task.time);if(task.duration<0)task.duration+=1440;if(!validTime(end)||task.duration===0)task.error='Некорректное окончание интервала';}
-  if(dur){const d=duration(dur);if(!d||task.duration&&task.duration!==d)task.error='Некорректная или противоречивая длительность';else task.duration=d;}
+  if(dur){const d=duration(dur.replace(/h\s+(?=\d+m$)/,'h'));if((!d && !/^(?:0+h(?:\s*0+m)?|0+m|0{1,3}:00)$/.test(dur)) || (task.duration && task.duration!==d))task.error='Некорректная или противоречивая длительность';else task.duration=d;}
   task.kind=task.time&&task.duration?'calendar':'reminders';
   if(task.date&&!validDate(task.date))task.error='Некорректная дата';if(task.time&&!validTime(task.time))task.error='Некорректное время';
-  if(/[⏱]/u.test(raw)&&!dur)task.error='Не указана длительность';
+  if(raw.includes('⏱') && !durationMatch)task.error='Некорректная длительность после ⏱️';
   const repeat=raw.match(/🔁\s*(.*?)(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/u)?.[1]?.trim()||raw.match(/\[repeat::\s*([^\]]+)\]/)?.[1]?.trim()||'';
   task.repeatText=repeat;task.whenDone=/\bwhen done$/i.test(repeat);
   // A completion-relative repeat is scheduled by Obsidian, never guessed on the server.
@@ -45,7 +47,7 @@ function parseFile(text,path){
     else task.rangeDays=Math.round((Date.parse(task.dueDate+'T12:00:00Z')-Date.parse(task.startDate+'T12:00:00Z'))/86400000)+1;
    }
   }
-  task.title=raw.replace(marker,'').replace(/[📅⏳🛫➕✅❌]\s*\d{4}-\d{2}-\d{2}/gu,'').replace(/🔁\s*.*?(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/gu,'').replace(/⏱\uFE0F?\s*[^📅⏳🛫🔁➕✅❌<\[]+/gu,'').replace(/⏰\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?/g,'').replace(/\[(?:due|scheduled|start|repeat|time|duration)::[^\]]*\]/g,'').replace(/(^|\s)#[\p{L}\p{N}_/-]+/gu,'$1').replace(/^\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?\s+/,'').replace(/\s+/g,' ').trim();
+  task.title=raw.replace(marker,'').replace(/[📅⏳🛫➕✅❌]\s*\d{4}-\d{2}-\d{2}/gu,'').replace(/🔁\s*.*?(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/gu,'').replace(durationField,'').replace(/(?:^|\s)[🔺⏫🔼🔽⏬](?=\s|$)/gu,' ').replace(/⏰\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?/g,'').replace(/\[(?:due|scheduled|start|repeat|time|duration)::[^\]]*\]/g,'').replace(/(^|\s)#[\p{L}\p{N}_/-]+/gu,'$1').replace(/^\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?\s+/,'').replace(/\s+/g,' ').trim();
   task.description=descriptionFor(lines,i);task.completed=date('✅','completion')||'';task.created=date('➕','created')||'';
   task.selected=task.eligible&&!!task.date;
   if(task.selected&&!task.title)task.error='Пустое название';tasks.push(task);

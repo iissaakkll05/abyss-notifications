@@ -10,7 +10,7 @@ function recurrenceRepairs(tasks,state={}){
   const families=new Set(rows.map(family).filter(Boolean));if(families.size!==1||rows.some(t=>!t.done&&!family(t)||t.title!==rows[0].title))continue;
   if(new Set(rows.map(t=>t.date)).size!==rows.length||rows.some(t=>(t.rawLine.match(/<!-- (?:dav|gcal):[a-f0-9]{32} -->/g)||[]).length!==1))continue;
   const records=['reminders','calendar'].map(k=>state[k+':'+id]).filter(Boolean),dates=new Set();
-  for(const record of records){try{const hash=JSON.parse(record.hash);if(Array.isArray(hash)&&hash[1]===rows[0].title&&/^\d{4}-\d{2}-\d{2}$/.test(hash[3]))dates.add(hash[3]);}catch{/* Earliest generation remains the fallback when no usable checkpoint exists. */}}
+  for(const record of records){try{const hash=JSON.parse(record.hash);if(Array.isArray(hash)&&typeof hash[1]==='string'&&hash[1].replace(/(?:^|\s)[🔺⏫🔼🔽⏬](?=\s|$)/gu,' ').replace(/\s+/g,' ').trim()===rows[0].title&&/^\d{4}-\d{2}-\d{2}$/.test(hash[3]))dates.add(hash[3]);}catch{/* Earliest generation remains the fallback when no usable checkpoint exists. */}}
   if(dates.size>1)continue;
   const savedDate=[...dates][0],keeper=rows.find(t=>t.date===savedDate)||rows.slice().sort((a,b)=>a.date.localeCompare(b.date)||a.path.localeCompare(b.path)||a.line-b.line)[0];
   for(const t of rows)if(t!==keeper)result.push({task:t,oldId:id});
