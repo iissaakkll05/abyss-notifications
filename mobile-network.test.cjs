@@ -8,4 +8,10 @@ const assert=require('node:assert/strict'),{createDavRequest}=require('./mobile-
  await assert.rejects(()=>bounded({...params,method:'PUT'}),e=>e.code==='DAV_TIMEOUT');assert.equal(calls,1);
  await assert.rejects(()=>bounded({url:params.url,method:'GET'}),e=>e.code==='DAV_IN_FLIGHT');assert.equal(calls,1);
  finish({status:201});await new Promise(r=>setImmediate(r));await bounded({url:params.url,method:'GET'});assert.equal(calls,2);console.log('OK hung iOS request times out; no further requests or duplicate writes until native operation settles');
+ let releaseRead,readCalls=0;
+ const readRetry=createDavRequest(async()=>++readCalls===1?new Promise(resolve=>{releaseRead=resolve;}):{status:207},{timeoutMs:10});
+ await assert.rejects(()=>readRetry(params),e=>e.code==='DAV_TIMEOUT');
+ assert.equal((await readRetry(params)).status,207);
+ releaseRead({status:207});assert.equal(readCalls,2);
+ console.log('OK timed-out discovery read allows a fresh request');
 })().catch(e=>{console.error(e);process.exitCode=1;});

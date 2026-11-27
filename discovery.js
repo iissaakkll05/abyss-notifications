@@ -42,7 +42,8 @@ function connectionFailure(error,method,url){
   else if(/-1004\b|ECONNREFUSED|connect.*refused/i.test(source))reason='не удалось установить соединение с сервером';
   else if(/-1005\b|ECONNRESET|connection.*lost/i.test(source))reason='соединение с сервером прервалось';
   else if(/not implemented|unimplemented|unsupported.*method|Expected one of/i.test(source))reason='сетевой API приложения не поддержал метод запроса';
-  else if(/DAV_IN_FLIGHT/.test(source))reason='предыдущий запрос iOS ещё выполняется; повторная отправка приостановлена';
+  else if(/DAV_IN_FLIGHT/.test(source))reason='Obsidian ожидает завершения предыдущих сетевых запросов';
+  if(/DAV_IN_FLIGHT/.test(source))return Error('CalDAV: '+reason+'. Новый запрос '+method+' не отправлен.');
   const safeNative=['Request failed','Failed to fetch','Load failed','Network request failed'].find(s=>source.toLowerCase().includes(s.toLowerCase()));
   const native=source.match(/(?:^|\s|[=(])(-1[02]\d\d)\b/)?.[1];
   return Error('CalDAV: '+reason+(native?' ['+native+']':safeNative?' ['+safeNative+']':'')+'. Запрос '+method+' → '+new URL(url).hostname+' не получил HTTP-ответа.');

@@ -15,7 +15,10 @@ class JournalModal extends Modal {
  onOpen() {
   this.contentEl.createEl('h2', {text:'Журнал Abyss Notifications'});
   const report = this.contentEl.createEl('pre', {cls:'an-report'});
-  this.render = () => { report.textContent = this.plugin.logRows.slice().reverse().join('\n'); };
+  this.render = () => { report.textContent = this.plugin.logRows.slice().reverse().map(line => line.replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z/, stamp => {
+    const date = new Date(stamp);
+    return Number.isNaN(date.getTime()) ? stamp : date.toLocaleString('ru-RU', {timeZoneName:'short'});
+  })).join('\n'); };
   this.plugin.logListeners.add(this.render);
   this.render();
  }
@@ -87,7 +90,7 @@ module.exports=class Notifications extends Plugin{
   return this.logWrite;
  }
  showLog(){new JournalModal(this).open();}
- showStatus(){new TextModal(this.app,'Состояние Abyss Notifications',[this.phase||'Ожидание',this.lastSuccess?'Последний успешный обмен: '+this.lastSuccess:'',this.result?'Операции на сервере: записано '+this.result.writes+'; удалено '+this.result.deletes+'; задач в обмене: '+this.result.selected:'',this.errors.length?'Пропущенные задачи сохранены на сервере без изменений; остальные синхронизированы.':'',...this.errors.map(e=>(e.title?'«'+e.title+'»\n':'')+e.path+':'+(e.line+1)+' — '+e.message)].filter(Boolean).join('\n')).open();}
+ showStatus(){new TextModal(this.app,'Состояние Abyss Notifications',[this.phase||'Ожидание',this.lastSuccess?'Последний успешный обмен: '+this.lastSuccess:'',this.result?'Операции на сервере: записано '+this.result.writes+'; удалено '+this.result.deletes+'; задач в обмене: '+this.result.selected:'',this.result&&this.errors.length?'Пропущенные задачи сохранены на сервере без изменений; остальные синхронизированы.':'',...this.errors.map(e=>(e.title?'«'+e.title+'»\n':'')+e.path+':'+(e.line+1)+' — '+e.message)].filter(Boolean).join('\n')).open();}
  legacyActive(){return !!this.app.plugins?.enabledPlugins?.has('task-calendar-bridge');}
  async snapshot(){
   const tasks=[],seen=new Set();let reads=0,parses=0;
@@ -137,7 +140,7 @@ module.exports=class Notifications extends Plugin{
 class Settings extends PluginSettingTab{
  constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
  display(){
-  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.10'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
+  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.11'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
   e.createEl('p',{text:p.legacyActive()?'Для запуска отключи старый Abyss Fruux Bridge.':p.phase||(p.allowed()?'Автоматический обмен разрешён на этом устройстве.':'На этом устройстве доступен ручной запуск.')});
   new Setting(e).setName('Обмен').addButton(b=>b.setButtonText('Синхронизировать').onClick(async()=>{await p.sync(true);this.display();}));
   new Setting(e).setName('Состояние и пропущенные задачи').addButton(b=>b.setButtonText('Открыть').onClick(()=>p.showStatus())).addButton(b=>b.setButtonText('Журнал').onClick(()=>p.showLog()));

@@ -21,7 +21,7 @@ function parseFile(text,path){
   const f=line.match(/^\s*(`{3,}|~{3,})/);if(f){if(!fence)fence=f[1][0];else if(f[1][0]===fence)fence='';continue;}if(fence)continue;
   const level=indent(line);if(line.trim())while(ancestors.length&&ancestors.at(-1).indent>=level)ancestors.pop();
   const m=line.match(taskLine);if(!m)continue;
-  const raw=m[3],id=[...raw.matchAll(marker)][0]?.[1],tags=[...raw.matchAll(/(^|\s)(#[\p{L}\p{N}_/-]+)/gu)].map(m=>m[2]);
+  const raw=m[3].replace(/🏁\s*(?:keep|delete)(?=\s|$)/giu,' '),id=[...raw.matchAll(marker)][0]?.[1],tags=[...raw.matchAll(/(^|\s)(#[\p{L}\p{N}_/-]+)/gu)].map(m=>m[2]);
   const task={id,path,line:i,rawLine:line,done:/[xX-]/.test(m[2]),eligible:(tags.length>0||!!ancestors.at(-1)?.eligible)&&!tags.includes('#task/default')};
   ancestors.push({indent:level,eligible:task.eligible});
   const date=(emoji,field)=>raw.match(new RegExp(emoji+'\\s*(\\d{4}-\\d{2}-\\d{2})'))?.[1]||raw.match(new RegExp('\\['+field+'::\\s*(\\d{4}-\\d{2}-\\d{2})\\s*\\]'))?.[1];
@@ -36,18 +36,17 @@ function parseFile(text,path){
   task.kind=task.time&&task.duration?'calendar':'reminders';
   if(task.date&&!validDate(task.date))task.error='Некорректная дата';if(task.time&&!validTime(task.time))task.error='Некорректное время';
   if(raw.includes('⏱') && !durationMatch)task.error='Некорректная длительность после ⏱️';
-  const repeat=raw.match(/🔁\s*(.*?)(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/u)?.[1]?.trim()||raw.match(/\[repeat::\s*([^\]]+)\]/)?.[1]?.trim()||'';
+  const repeat=raw.match(/🔁\s*(.*?)(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|🔺|⏫|🔼|🔽|⏬|#|<!--|\[|$))/u)?.[1]?.trim()||raw.match(/\[repeat::\s*([^\]]+)\]/)?.[1]?.trim()||'';
   task.repeatText=repeat;task.whenDone=/\bwhen done$/i.test(repeat);
   // A completion-relative repeat is scheduled by Obsidian, never guessed on the server.
-  try{task.rule=task.whenDone?'':recurrence(repeat)[0]?.replace(/^RRULE:/,'')||'';}catch(e){if(!task.done)task.error=e.message;task.rule='';}
+  try{task.rule=task.whenDone?'':recurrence(repeat)[0]?.replace(/^RRULE:/,'')||'';}catch{task.rule='';}
   if(task.kind==='calendar'&&task.startDate&&task.dueDate){
    if(!validDate(task.startDate)||task.startDate>task.dueDate)task.error='Дата начала должна быть корректной и не позже срока';
    else if(task.startDate<task.dueDate){
-    if(repeat)task.error='Диапазон начала–срока и отдельный повтор пока не совмещаются';
-    else task.rangeDays=Math.round((Date.parse(task.dueDate+'T12:00:00Z')-Date.parse(task.startDate+'T12:00:00Z'))/86400000)+1;
+    task.rangeDays=Math.round((Date.parse(task.dueDate+'T12:00:00Z')-Date.parse(task.startDate+'T12:00:00Z'))/86400000)+1;
    }
   }
-  task.title=raw.replace(marker,'').replace(/[📅⏳🛫➕✅❌]\s*\d{4}-\d{2}-\d{2}/gu,'').replace(/🔁\s*.*?(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/gu,'').replace(durationField,'').replace(/(?:^|\s)[🔺⏫🔼🔽⏬](?=\s|$)/gu,' ').replace(/⏰\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?/g,'').replace(/\[(?:due|scheduled|start|repeat|time|duration)::[^\]]*\]/g,'').replace(/(^|\s)#[\p{L}\p{N}_/-]+/gu,'$1').replace(/^\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?\s+/,'').replace(/\s+/g,' ').trim();
+  task.title=raw.replace(marker,'').replace(/[📅⏳🛫➕✅❌]\s*\d{4}-\d{2}-\d{2}/gu,'').replace(/🔁\s*.*?(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|🔺|⏫|🔼|🔽|⏬|#|<!--|\[|$))/gu,'').replace(durationField,'').replace(/(?:^|\s)[🔺⏫🔼🔽⏬](?=\s|$)/gu,' ').replace(/⏰\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?/g,'').replace(/\[(?:due|scheduled|start|repeat|time|duration)::[^\]]*\]/g,'').replace(/(^|\s)#[\p{L}\p{N}_/-]+/gu,'$1').replace(/^\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?\s+/,'').replace(/\s+/g,' ').trim();
   task.description=descriptionFor(lines,i);task.completed=date('✅','completion')||'';task.created=date('➕','created')||'';
   task.selected=task.eligible&&!!task.date;
   if(task.selected&&!task.title)task.error='Пустое название';tasks.push(task);

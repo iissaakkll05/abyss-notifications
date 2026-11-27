@@ -17,7 +17,10 @@ class JournalModal extends Modal {
  onOpen() {
   this.contentEl.createEl('h2', {text:'Журнал Abyss Notifications'});
   const report = this.contentEl.createEl('pre', {cls:'an-report'});
-  this.render = () => { report.textContent = this.plugin.logRows.slice().reverse().join('\n'); };
+  this.render = () => { report.textContent = this.plugin.logRows.slice().reverse().map(line => line.replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z/, stamp => {
+    const date = new Date(stamp);
+    return Number.isNaN(date.getTime()) ? stamp : date.toLocaleString('ru-RU', {timeZoneName:'short'});
+  })).join('\n'); };
   this.plugin.logListeners.add(this.render);
   this.render();
  }
@@ -89,7 +92,7 @@ module.exports=class Notifications extends Plugin{
   return this.logWrite;
  }
  showLog(){new JournalModal(this).open();}
- showStatus(){new TextModal(this.app,'Состояние Abyss Notifications',[this.phase||'Ожидание',this.lastSuccess?'Последний успешный обмен: '+this.lastSuccess:'',this.result?'Операции на сервере: записано '+this.result.writes+'; удалено '+this.result.deletes+'; задач в обмене: '+this.result.selected:'',this.errors.length?'Пропущенные задачи сохранены на сервере без изменений; остальные синхронизированы.':'',...this.errors.map(e=>(e.title?'«'+e.title+'»\n':'')+e.path+':'+(e.line+1)+' — '+e.message)].filter(Boolean).join('\n')).open();}
+ showStatus(){new TextModal(this.app,'Состояние Abyss Notifications',[this.phase||'Ожидание',this.lastSuccess?'Последний успешный обмен: '+this.lastSuccess:'',this.result?'Операции на сервере: записано '+this.result.writes+'; удалено '+this.result.deletes+'; задач в обмене: '+this.result.selected:'',this.result&&this.errors.length?'Пропущенные задачи сохранены на сервере без изменений; остальные синхронизированы.':'',...this.errors.map(e=>(e.title?'«'+e.title+'»\n':'')+e.path+':'+(e.line+1)+' — '+e.message)].filter(Boolean).join('\n')).open();}
  legacyActive(){return !!this.app.plugins?.enabledPlugins?.has('task-calendar-bridge');}
  async snapshot(){
   const tasks=[],seen=new Set();let reads=0,parses=0;
@@ -139,7 +142,7 @@ module.exports=class Notifications extends Plugin{
 class Settings extends PluginSettingTab{
  constructor(app,plugin){super(app,plugin);this.plugin=plugin;}
  display(){
-  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.10'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
+  const p=this.plugin,s=p.settings,e=this.containerEl;e.empty();e.addClass('an-settings');e.createEl('h2',{text:'Abyss Notifications · 1.0.11'});e.createEl('p',{text:'Obsidian → fruux → телефон. Дата без времени — напоминание без сигнала; одно время — напоминание с сигналом; длительность — событие.'});
   e.createEl('p',{text:p.legacyActive()?'Для запуска отключи старый Abyss Fruux Bridge.':p.phase||(p.allowed()?'Автоматический обмен разрешён на этом устройстве.':'На этом устройстве доступен ручной запуск.')});
   new Setting(e).setName('Обмен').addButton(b=>b.setButtonText('Синхронизировать').onClick(async()=>{await p.sync(true);this.display();}));
   new Setting(e).setName('Состояние и пропущенные задачи').addButton(b=>b.setButtonText('Открыть').onClick(()=>p.showStatus())).addButton(b=>b.setButtonText('Журнал').onClick(()=>p.showLog()));
@@ -181,7 +184,7 @@ function parseFile(text,path){
   const f=line.match(/^\s*(`{3,}|~{3,})/);if(f){if(!fence)fence=f[1][0];else if(f[1][0]===fence)fence='';continue;}if(fence)continue;
   const level=indent(line);if(line.trim())while(ancestors.length&&ancestors.at(-1).indent>=level)ancestors.pop();
   const m=line.match(taskLine);if(!m)continue;
-  const raw=m[3],id=[...raw.matchAll(marker)][0]?.[1],tags=[...raw.matchAll(/(^|\s)(#[\p{L}\p{N}_/-]+)/gu)].map(m=>m[2]);
+  const raw=m[3].replace(/🏁\s*(?:keep|delete)(?=\s|$)/giu,' '),id=[...raw.matchAll(marker)][0]?.[1],tags=[...raw.matchAll(/(^|\s)(#[\p{L}\p{N}_/-]+)/gu)].map(m=>m[2]);
   const task={id,path,line:i,rawLine:line,done:/[xX-]/.test(m[2]),eligible:(tags.length>0||!!ancestors.at(-1)?.eligible)&&!tags.includes('#task/default')};
   ancestors.push({indent:level,eligible:task.eligible});
   const date=(emoji,field)=>raw.match(new RegExp(emoji+'\\s*(\\d{4}-\\d{2}-\\d{2})'))?.[1]||raw.match(new RegExp('\\['+field+'::\\s*(\\d{4}-\\d{2}-\\d{2})\\s*\\]'))?.[1];
@@ -196,18 +199,17 @@ function parseFile(text,path){
   task.kind=task.time&&task.duration?'calendar':'reminders';
   if(task.date&&!validDate(task.date))task.error='Некорректная дата';if(task.time&&!validTime(task.time))task.error='Некорректное время';
   if(raw.includes('⏱') && !durationMatch)task.error='Некорректная длительность после ⏱️';
-  const repeat=raw.match(/🔁\s*(.*?)(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/u)?.[1]?.trim()||raw.match(/\[repeat::\s*([^\]]+)\]/)?.[1]?.trim()||'';
+  const repeat=raw.match(/🔁\s*(.*?)(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|🔺|⏫|🔼|🔽|⏬|#|<!--|\[|$))/u)?.[1]?.trim()||raw.match(/\[repeat::\s*([^\]]+)\]/)?.[1]?.trim()||'';
   task.repeatText=repeat;task.whenDone=/\bwhen done$/i.test(repeat);
   // A completion-relative repeat is scheduled by Obsidian, never guessed on the server.
-  try{task.rule=task.whenDone?'':recurrence(repeat)[0]?.replace(/^RRULE:/,'')||'';}catch(e){if(!task.done)task.error=e.message;task.rule='';}
+  try{task.rule=task.whenDone?'':recurrence(repeat)[0]?.replace(/^RRULE:/,'')||'';}catch{task.rule='';}
   if(task.kind==='calendar'&&task.startDate&&task.dueDate){
    if(!validDate(task.startDate)||task.startDate>task.dueDate)task.error='Дата начала должна быть корректной и не позже срока';
    else if(task.startDate<task.dueDate){
-    if(repeat)task.error='Диапазон начала–срока и отдельный повтор пока не совмещаются';
-    else task.rangeDays=Math.round((Date.parse(task.dueDate+'T12:00:00Z')-Date.parse(task.startDate+'T12:00:00Z'))/86400000)+1;
+    task.rangeDays=Math.round((Date.parse(task.dueDate+'T12:00:00Z')-Date.parse(task.startDate+'T12:00:00Z'))/86400000)+1;
    }
   }
-  task.title=raw.replace(marker,'').replace(/[📅⏳🛫➕✅❌]\s*\d{4}-\d{2}-\d{2}/gu,'').replace(/🔁\s*.*?(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|<!--|\[|$))/gu,'').replace(durationField,'').replace(/(?:^|\s)[🔺⏫🔼🔽⏬](?=\s|$)/gu,' ').replace(/⏰\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?/g,'').replace(/\[(?:due|scheduled|start|repeat|time|duration)::[^\]]*\]/g,'').replace(/(^|\s)#[\p{L}\p{N}_/-]+/gu,'$1').replace(/^\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?\s+/,'').replace(/\s+/g,' ').trim();
+  task.title=raw.replace(marker,'').replace(/[📅⏳🛫➕✅❌]\s*\d{4}-\d{2}-\d{2}/gu,'').replace(/🔁\s*.*?(?=\s*(?:📅|⏳|🛫|➕|✅|❌|⏰|⏱|🔺|⏫|🔼|🔽|⏬|#|<!--|\[|$))/gu,'').replace(durationField,'').replace(/(?:^|\s)[🔺⏫🔼🔽⏬](?=\s|$)/gu,' ').replace(/⏰\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?/g,'').replace(/\[(?:due|scheduled|start|repeat|time|duration)::[^\]]*\]/g,'').replace(/(^|\s)#[\p{L}\p{N}_/-]+/gu,'$1').replace(/^\s*\d{1,2}:\d{2}(?:\s*[-–—]\s*\d{1,2}:\d{2})?\s+/,'').replace(/\s+/g,' ').trim();
   task.description=descriptionFor(lines,i);task.completed=date('✅','completion')||'';task.created=date('➕','created')||'';
   task.selected=task.eligible&&!!task.date;
   if(task.selected&&!task.title)task.error='Пустое название';tasks.push(task);
@@ -249,16 +251,34 @@ function recurrence(text) {
   if (s.includes('when done')) throw new Error('Повтор «when done» зависит от выполнения. Его нельзя точно перенести в календарь.');
   const until = s.match(/ until (\d{4}-\d{2}-\d{2})$/);
   if (until) { if (!validDate(until[1])) throw new Error('Некорректная дата окончания повтора'); s = s.slice(0,until.index); }
+  const days = {monday:'MO',tuesday:'TU',wednesday:'WE',thursday:'TH',friday:'FR',saturday:'SA',sunday:'SU'};
+  const months = 'january february march april may june july august september october november december'.split(' ');
+  // Abyss uses a month name in place of "year" for yearly rules with interval one.
+  s = s.replace(/^every ([a-z]+) on the (.+)$/, (original, month, day) =>
+    months.includes(month) ? 'every year on '+month+' '+day : original);
   const m = s.match(/^every(?: (\d+))? (day|days|week|weeks|month|months|year|years|weekday|weekdays)(?: on (.+))?$/);
   if (!m || Number(m[1] || 1)<1) throw new Error('Неподдерживаемый повтор: '+text);
   const freq = {day:'DAILY',week:'WEEKLY',month:'MONTHLY',year:'YEARLY',weekday:'WEEKLY'}[m[2].replace(/s$/, '')];
   let rule = 'RRULE:FREQ='+freq+';INTERVAL='+(m[1]||1);
   if (m[2].startsWith('weekday')) rule+=';BYDAY=MO,TU,WE,TH,FR';
   if (m[3]) {
-    const days = {monday:'MO',tuesday:'TU',wednesday:'WE',thursday:'TH',friday:'FR',saturday:'SA',sunday:'SU'};
-    const parts = m[3].split(/\s*,\s*|\s+and\s+/).map(x=>days[x.trim()]);
-    if (freq!=='WEEKLY' || parts.some(x=>!x)) throw new Error('Поддерживается «every week on Monday, Friday»; сложный повтор не отправлен.');
-    rule+=';BYDAY='+parts.join(',');
+    const value = m[3].replace(/^the /,'');
+    if (freq==='WEEKLY') {
+      const parts = value.split(/,\s*(?:and\s+)?|\s+and\s+/).map(x=>days[x.trim()]);
+      if (parts.some(x=>!x)) throw Error('Некорректные дни недели');
+      rule+=';BYDAY='+parts.join(',');
+    } else if (freq==='MONTHLY') {
+      const match = /^(first|last|2nd last|\d+(?:st|nd|rd|th))(?: ([a-z]+))?$/.exec(value);
+      if (!match) throw Error('Неизвестный месячный повтор');
+      const ordinal = ({first:1,last:-1,'2nd last':-2})[match[1]] ?? parseInt(match[1],10);
+      if (!ordinal || ordinal>(match[2]?5:31) || (match[2]&&!days[match[2]])) throw Error('Некорректный день месяца');
+      rule+=match[2]?';BYDAY='+ordinal+days[match[2]]:';BYMONTHDAY='+ordinal;
+    } else if (freq==='YEARLY') {
+      const match = /^([a-z]+) (\d+)(?:st|nd|rd|th)$/.exec(value);
+      const month = match ? months.indexOf(match[1])+1 : 0;
+      if (!month || !validDate('2000-'+String(month).padStart(2,'0')+'-'+match[2].padStart(2,'0'))) throw Error('Некорректная дата ежегодного повтора');
+      rule+=';BYMONTH='+month+';BYMONTHDAY='+Number(match[2]);
+    } else throw Error('Неизвестный повтор');
   }
   if (until) rule+=';UNTIL='+until[1].replace(/-/g,'')+'T235959Z';
   return [rule];
@@ -408,7 +428,8 @@ function connectionFailure(error,method,url){
   else if(/-1004\b|ECONNREFUSED|connect.*refused/i.test(source))reason='не удалось установить соединение с сервером';
   else if(/-1005\b|ECONNRESET|connection.*lost/i.test(source))reason='соединение с сервером прервалось';
   else if(/not implemented|unimplemented|unsupported.*method|Expected one of/i.test(source))reason='сетевой API приложения не поддержал метод запроса';
-  else if(/DAV_IN_FLIGHT/.test(source))reason='предыдущий запрос iOS ещё выполняется; повторная отправка приостановлена';
+  else if(/DAV_IN_FLIGHT/.test(source))reason='Obsidian ожидает завершения предыдущих сетевых запросов';
+  if(/DAV_IN_FLIGHT/.test(source))return Error('CalDAV: '+reason+'. Новый запрос '+method+' не отправлен.');
   const safeNative=['Request failed','Failed to fetch','Load failed','Network request failed'].find(s=>source.toLowerCase().includes(s.toLowerCase()));
   const native=source.match(/(?:^|\s|[=(])(-1[02]\d\d)\b/)?.[1];
   return Error('CalDAV: '+reason+(native?' ['+native+']':safeNative?' ['+safeNative+']':'')+'. Запрос '+method+' → '+new URL(url).hostname+' не получил HTTP-ответа.');
@@ -598,19 +619,20 @@ module.exports={recurrenceRepairs};
 // Keep desktop requests unchanged. iOS explicitly receives UTF-8 bytes and normalized headers.
 function createDavRequest(nativeRequest,{ios=false,timeoutMs=120000}={}){
  const platform = ios ? 'iOS' : 'Obsidian';
- const pending=new Map();let stalled=0;
+ const pending=new Map();let stalledWrites=0,stalledReads=0;
  return async params=>{
-  if(stalled){const e=Error('Предыдущий запрос '+platform+' ещё не завершён. Новые запросы приостановлены, чтобы не повторить запись.');e.code='DAV_IN_FLIGHT';throw e;}
+  if(stalledWrites || stalledReads>=3){const e=Error('Предыдущий запрос '+platform+' ещё не завершён. Новые запросы приостановлены, чтобы не повторить запись.');e.code='DAV_IN_FLIGHT';throw e;}
   const headers=Object.fromEntries(Object.entries(params.headers||{}).map(([k,v])=>[k.toLowerCase(),v]));
   if(params.contentType&&!headers['content-type'])headers['content-type']=params.contentType;
   let body=params.body;
   if(ios && typeof body==='string'){const bytes=new TextEncoder().encode(body);body=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);}
   const key=JSON.stringify([params.url,params.method,headers.authorization||'',typeof params.body==='string'?params.body:'']);
   if(pending.has(key)){const e=Error('Этот запрос уже выполняется.');e.code='DAV_IN_FLIGHT';throw e;}
+  const readOnly=/^(?:GET|HEAD|OPTIONS|PROPFIND|REPORT)$/i.test(params.method||'GET');
   const record={timedOut:false};pending.set(key,record);let timer;
   const operation=Promise.resolve().then(()=>nativeRequest(ios ? {...params,headers,...(body!==undefined?{body}:{})} : params));
-  const settled=operation.finally(()=>{pending.delete(key);if(record.timedOut)stalled--;});
-  try{return await Promise.race([settled,new Promise((_,reject)=>{timer=setTimeout(()=>{record.timedOut=true;stalled++;const e=Error(platform+' не завершил запрос за '+Math.round(timeoutMs/1000)+' секунд. Ожидание прекращено; нативный запрос не отменён.');e.code='DAV_TIMEOUT';reject(e);},timeoutMs);})]);}
+  const settled=operation.finally(()=>{if(pending.get(key)===record)pending.delete(key);if(record.timedOut){if(readOnly)stalledReads--;else stalledWrites--;}});
+  try{return await Promise.race([settled,new Promise((_,reject)=>{timer=setTimeout(()=>{record.timedOut=true;if(readOnly){stalledReads++;pending.delete(key);}else stalledWrites++;const e=Error(platform+' не завершил запрос за '+Math.round(timeoutMs/1000)+' секунд. Ожидание прекращено; нативный запрос не отменён.');e.code='DAV_TIMEOUT';reject(e);},timeoutMs);})]);}
   finally{clearTimeout(timer);}
  };
 }
